@@ -28,6 +28,8 @@ public:
     side_length_   = declare_parameter<double>("side_length", 2.0);     // m
     linear_speed_  = declare_parameter<double>("linear_speed", 0.25);   // m/s
     angular_speed_ = declare_parameter<double>("angular_speed", 0.6);   // rad/s
+    // Number of laps to drive before stopping. 0 = drive forever (original behaviour).
+    laps_          = declare_parameter<int>("laps", 0);
 
     // Time to cover one side, and time to turn 90 degrees, at the set speeds.
     drive_time_ = side_length_ / linear_speed_;
@@ -66,6 +68,15 @@ private:
           RCLCPP_INFO(get_logger(),
             "Completed a full loop (%d sides). Watch the odometry drift in RViz!",
             sides_done_);
+
+          if (laps_ > 0 && sides_done_ / 4 >= laps_) {
+            cmd_pub_->publish(geometry_msgs::msg::Twist());  // zero Twist: stop the robot
+            RCLCPP_INFO(get_logger(),
+              "Requested %d lap(s) complete (%d sides) - stopping.",
+              laps_, sides_done_);
+            rclcpp::shutdown();
+            return;
+          }
         }
       }
     }
@@ -87,6 +98,7 @@ private:
   Phase phase_{Phase::DRIVE};
   rclcpp::Time phase_start_;
   int sides_done_{0};
+  int laps_{0};
 };
 
 int main(int argc, char ** argv)
