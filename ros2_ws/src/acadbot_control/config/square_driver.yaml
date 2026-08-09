@@ -5,3 +5,4 @@ square_driver:
     side_length: 2.0      # metres per side of the square
     linear_speed: 0.25    # m/s while driving straight
     angular_speed: 0.6    # rad/s while turning
+    laps: 2               # stop cleanly after this many laps (0 = drive forever)
