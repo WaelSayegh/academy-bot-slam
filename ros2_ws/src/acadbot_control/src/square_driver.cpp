@@ -28,6 +28,10 @@ public:
     side_length_   = declare_parameter<double>("side_length", 2.0);     // m
     linear_speed_  = declare_parameter<double>("linear_speed", 0.25);   // m/s
     angular_speed_ = declare_parameter<double>("angular_speed", 0.6);   // rad/s
+    // Number of laps to drive before stopping. 0 = drive forever (original
+    // behaviour) — any positive value stops the node cleanly after that many
+    // full loops of the square.
+    laps_          = declare_parameter<int>("laps", 0);
 
     // Time to cover one side, and time to turn 90 degrees, at the set speeds.
     drive_time_ = side_length_ / linear_speed_;
@@ -63,9 +67,27 @@ private:
         sides_done_++;
         switch_phase(Phase::DRIVE, "driving");
         if (sides_done_ % 4 == 0) {
+          const int laps_done = sides_done_ / 4;
           RCLCPP_INFO(get_logger(),
             "Completed a full loop (%d sides). Watch the odometry drift in RViz!",
             sides_done_);
+
+          if (laps_ > 0 && laps_done >= laps_) {
+            // Publish a zero Twist *before* shutting down. Without this, the
+            // last non-zero cmd_vel we sent stays latched as the robot's
+            // commanded velocity — Gazebo keeps executing it and the robot
+            // keeps driving/turning forever even though this node is gone,
+            // because nothing else is publishing to /cmd_vel to stop it.
+            geometry_msgs::msg::Twist stop_cmd;
+            cmd_pub_->publish(stop_cmd);
+
+            RCLCPP_INFO(get_logger(),
+              "Finished requested %d lap(s) (%d sides). Stopping.",
+              laps_done, sides_done_);
+
+            rclcpp::shutdown();
+            return;
+          }
         }
       }
     }
@@ -84,6 +106,7 @@ private:
 
   double side_length_, linear_speed_, angular_speed_;
   double drive_time_, turn_time_;
+  int laps_{0};
   Phase phase_{Phase::DRIVE};
   rclcpp::Time phase_start_;
   int sides_done_{0};
