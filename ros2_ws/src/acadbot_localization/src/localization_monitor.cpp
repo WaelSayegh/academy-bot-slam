@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -16,6 +17,12 @@ public:
     // no params file is passed in).
     declare_parameter("report_period", 1.0);
     double report_period = get_parameter("report_period").as_double();
+
+    // converged_sigma is needed on every report() call (not just at
+    // startup, like report_period is), so it's cached as a member instead
+    // of a local variable here.
+    declare_parameter("converged_sigma", 0.25);
+    converged_sigma_ = get_parameter("converged_sigma").as_double();
 
     // Creating a subscriber: listens to AMCL's pose estimate and just
     // stashes the latest message, no logging happens here.
@@ -75,8 +82,19 @@ private:
     double qw = latest_pose_->pose.pose.orientation.w;
     double yaw = 2.0 * std::atan2(qz, qw);
 
+    // covariance is a row-major 6x6 matrix over (x, y, z, roll, pitch,
+    // yaw). Index 0 is Var(x), index 7 is Var(y) (row 1, col 1: 1*6+1=7).
+    // Take the worse (larger) of the two axes, then sqrt() to turn the
+    // variance (m^2) into a standard deviation (m) - a single number for
+    // "how many metres of uncertainty AMCL currently has."
+    double var_x = latest_pose_->pose.covariance[0];
+    double var_y = latest_pose_->pose.covariance[7];
+    double sigma = std::sqrt(std::max(var_x, var_y));
+    const char * verdict = (sigma < converged_sigma_) ? "CONVERGED" : "SEARCHING";
+
     // Logging the report line.
-    RCLCPP_INFO(get_logger(), "x=%.3f y=%.3f yaw=%.3f", x, y, yaw);
+    RCLCPP_INFO(get_logger(), "x=%.3f y=%.3f yaw=%.3f sigma=%.3f [%s]",
+      x, y, yaw, sigma, verdict);
   }
 
   // Subscriber handle, the timer handle, and the last pose we received.
@@ -84,6 +102,7 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
   PoseWithCovarianceStamped::SharedPtr latest_pose_;
   bool has_pose_ = false;
+  double converged_sigma_;
 };
 
 int main(int argc, char ** argv)
