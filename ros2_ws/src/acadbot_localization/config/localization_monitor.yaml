@@ -1,0 +1,7 @@
+# localization_monitor.yaml — parameters for the AMCL convergence monitor.
+# Passed through to the node by localization.launch.py.
+localization_monitor:
+  ros__parameters:
+    use_sim_time: true
+    report_period: 1.0      # seconds between report lines
+    converged_sigma: 0.25   # metres; below this print CONVERGED, above it SEARCHING

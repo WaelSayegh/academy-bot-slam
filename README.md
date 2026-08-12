@@ -69,6 +69,29 @@ rotation gives the scan matcher nothing to match and smears the map. When it
 looks good, save it in *both* formats (see `acadbot_navigation/maps/README.md`);
 Session 4 loads the serialized pose graph, not the `.pgm`.
 
+**Reusing the map you just saved** — AMCL and `map_server` only, without the
+rest of the Nav2 stack:
+```bash
+ros2 launch acadbot_localization localization.launch.py   # sim + map + AMCL + RViz + monitor
+ros2 run teleop_twist_keyboard teleop_twist_keyboard      # drive, to watch it converge
+
+# or name the map explicitly, to localise against a different one:
+ros2 launch acadbot_localization localization.launch.py \
+    map:=/ros2_ws/src/acadbot_navigation/maps/academy_map.yaml
+```
+| argument | default | meaning |
+|---|---|---|
+| `map` | `acadbot_navigation/maps/academy_map.yaml` | occupancy grid to localise against |
+| `headless` | `false` | Gazebo server only — no GUI, no GPU |
+| `rviz` | `true` | start RViz2; set `false` on a machine with no display |
+
+RViz comes up showing your map with the robot in the **wrong place**: AMCL
+publishes nothing at all until you give it a starting guess. Set **2D Pose
+Estimate** and a cloud of pose hypotheses appears around your click; drive a few
+metres along a wall and the cloud tightens onto the true pose.
+`localization_monitor` prints `SEARCHING` while that spread is wider than its
+`converged_sigma`, then `CONVERGED`.
+
 ### Session 3 — Visual SLAM
 The robot already publishes `/camera/image`, `/camera/depth_image` and
 `/camera/points`. This session is mostly theory + exploring the camera stream
@@ -101,6 +124,7 @@ kick in. Block its path with a chair in RViz's view to trigger them live.
 | `acadbot_control`     | **C++** nodes: `square_driver` (drift demo), `patrol_commander` (Nav2 client) |
 | `acadbot_slam`        | `slam_toolbox` mapping + localization configs/launch |
 | `acadbot_navigation`  | Nav2 params (incl. recovery behaviors), maps, launch |
+| `acadbot_localization`| AMCL on a saved map without the rest of Nav2, plus the **C++** `localization_monitor` convergence reporter |
 | `acadbot_bringup`     | One-command launch files per session |
 
 See [`PROJECT.md`](PROJECT.md) for the full architecture, the TF tree, the topic

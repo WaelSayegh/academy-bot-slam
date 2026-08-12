@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>acadbot_localization</name>
+  <version>1.0.0</version>
+  <description>Standalone AMCL localization on a saved map, plus a monitor node that reports whether AMCL has actually converged.</description>
+  <maintainer email="eliasantoun07@outlook.com">Elias Antoun</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
+
+  <!-- Brought in by the launch file, not linked against. -->
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>acadbot_gazebo</exec_depend>
+  <exec_depend>acadbot_navigation</exec_depend>
+  <exec_depend>acadbot_description</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
