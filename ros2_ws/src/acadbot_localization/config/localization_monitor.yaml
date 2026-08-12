@@ -1,0 +1,4 @@
+localization_monitor:
+  ros__parameters:
+    report_period: 1.0
+    converged_sigma: 0.25

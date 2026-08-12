@@ -69,6 +69,17 @@ rotation gives the scan matcher nothing to match and smears the map. When it
 looks good, save it in *both* formats (see `acadbot_navigation/maps/README.md`);
 Session 4 loads the serialized pose graph, not the `.pgm`.
 
+**Homework Part B** adds `acadbot_localization` — a standalone package that
+loads a saved map and runs `map_server` + AMCL + a small C++ convergence
+monitor, without bringing up the rest of Nav2:
+```bash
+ros2 launch acadbot_localization localization.launch.py \
+    map:=/ros2_ws/src/acadbot_navigation/maps/<your_map>.yaml
+```
+Set the initial pose in RViz (**2D Pose Estimate** / **SetInitialPose**,
+depending on toolbar config) before AMCL will publish anything — see
+`acadbot_localization/README.md` for details on the monitor node's output.
+
 ### Session 3 — Visual SLAM
 The robot already publishes `/camera/image`, `/camera/depth_image` and
 `/camera/points`. This session is mostly theory + exploring the camera stream
@@ -102,6 +113,7 @@ kick in. Block its path with a chair in RViz's view to trigger them live.
 | `acadbot_slam`        | `slam_toolbox` mapping + localization configs/launch |
 | `acadbot_navigation`  | Nav2 params (incl. recovery behaviors), maps, launch |
 | `acadbot_bringup`     | One-command launch files per session |
+| `acadbot_localization` | Standalone `map_server` + AMCL localization launch, with a convergence-monitoring node |
 
 See [`PROJECT.md`](PROJECT.md) for the full architecture, the TF tree, the topic
 graph and the session-by-session learning outcomes.
@@ -116,10 +128,11 @@ PR, review — is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Read it once in week 
 
 | Argument | Applies to | Default | Why you'd change it |
 |---|---|---|---|
-| `headless:=true` | `simulation`, `mapping`, `autonomy` | `false` | Gazebo server only — no GUI, no GPU. Needed for CI and for machines with no working X. |
-| `rviz:=false` | `mapping`, `autonomy` | `true` | Skip RViz2 for the same reason. |
+| `headless:=true` | `simulation`, `mapping`, `autonomy`, `localization` | `false` | Gazebo server only — no GUI, no GPU. Needed for CI and for machines with no working X. |
+| `rviz:=false` | `mapping`, `autonomy`, `localization` | `true` | Skip RViz2 for the same reason. |
 | `localization:=amcl` | `autonomy`, `navigation` | `slam` | Use AMCL + `map_server` on the `.yaml` grid instead of slam_toolbox on the pose graph. |
 | `nav2_delay:=<sec>` | `autonomy`, `navigation` | `12.0` | How long to wait for localization before starting Nav2. Raise it if you see `Failed to change state for node: controller_server`. |
+| `map:=<path>` | `localization` | `acadbot_navigation/maps/academy_map.yaml` | Point at a different saved `.yaml` map |
 
 ## Smoke-testing after a dependency bump
 
@@ -132,6 +145,17 @@ ros2 lifecycle get /slam_toolbox          # must be: active [3]
 ros2 topic echo /map --once | head -5     # must produce a grid
 ros2 run tf2_ros tf2_echo map odom        # must resolve
 ```
+
+The same idea applies to the localization stack — no driving needed to confirm
+the servers themselves are alive:
+
+```bash
+ros2 launch acadbot_localization localization.launch.py headless:=true rviz:=false
+ros2 lifecycle get /map_server            # must be: active [3]
+ros2 lifecycle get /amcl                  # must be: active [3]
+```
+(`map → odom` will still correctly fail to resolve here until an initial pose
+is set — that's expected, not a bug.)
 
 Map *quality* cannot be checked this way — it depends on how you drive. Build
 the reference map by hand.
