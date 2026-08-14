@@ -28,6 +28,9 @@ public:
     side_length_   = declare_parameter<double>("side_length", 2.0);     // m
     linear_speed_  = declare_parameter<double>("linear_speed", 0.25);   // m/s
     angular_speed_ = declare_parameter<double>("angular_speed", 0.6);   // rad/s
+    
+    // 0 means keep the current behavior and run forever.
+    laps_ = declare_parameter<int>("laps", 0);
 
     // Time to cover one side, and time to turn 90 degrees, at the set speeds.
     drive_time_ = side_length_ / linear_speed_;
@@ -59,16 +62,28 @@ private:
       }
     } else {  // TURN
       cmd.angular.z = angular_speed_;
+
       if (elapsed >= turn_time_) {
         sides_done_++;
-        switch_phase(Phase::DRIVE, "driving");
         if (sides_done_ % 4 == 0) {
+          const int completed_laps = sides_done_ / 4;
           RCLCPP_INFO(get_logger(),
             "Completed a full loop (%d sides). Watch the odometry drift in RViz!",
             sides_done_);
+
+          if (laps_ > 0 && completed_laps >= laps_) {
+            geometry_msgs::msg::Twist stop_cmd;
+            cmd_pub_->publish(stop_cmd);
+            RCLCPP_INFO(get_logger(),
+              "Completed %d laps. Stopping square_driver.", completed_laps);
+
+            rclcpp::shutdown();
+            return;
+          }
         }
+        switch_phase(Phase::DRIVE, "driving");
       }
-    }
+  }
     cmd_pub_->publish(cmd);
   }
 
@@ -86,6 +101,7 @@ private:
   double drive_time_, turn_time_;
   Phase phase_{Phase::DRIVE};
   rclcpp::Time phase_start_;
+  int laps_{0};
   int sides_done_{0};
 };
 
