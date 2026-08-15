@@ -1,0 +1,11 @@
+string job_id
+---
+bool success
+string message
+string failed_leg
+---
+string leg
+string target
+float32 distance_remaining
+uint32 attempt
+uint32 max_attempts

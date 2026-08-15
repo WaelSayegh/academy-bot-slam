@@ -1,0 +1,6 @@
+string pickup
+string dropoff
+---
+bool accepted
+string job_id
+string reason
