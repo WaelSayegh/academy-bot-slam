@@ -29,12 +29,22 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
+#include <mutex>
+#include <thread>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "acadbot_courier_interfaces/srv/submit_delivery.hpp"
+#include "acadbot_courier_interfaces/action/execute_delivery.hpp"
 
 using SubmitDelivery =
   acadbot_courier_interfaces::srv::SubmitDelivery;
+
+using ExecuteDelivery =
+  acadbot_courier_interfaces::action::ExecuteDelivery;
+
+using CourierGoalHandle =
+  rclcpp_action::ServerGoalHandle<ExecuteDelivery>;
 
 // Named navigation pose loaded from YAML.
 // Yaw is stored in radians and later converted to a quaternion for Nav2 goals.
@@ -142,6 +152,7 @@ public:
         location.yaw);
     }
 
+    // Create SubmitDelivery service
     submit_service_ = create_service<SubmitDelivery>(
         "submit_delivery",
         std::bind(&CourierServer::handle_submit_delivery,
@@ -149,38 +160,23 @@ public:
 
     RCLCPP_INFO(get_logger(),
         "Service '/submit_delivery' is ready.");
+
+    // Create ExecuteDelivery action server
+    execute_action_server_ =
+      rclcpp_action::create_server<ExecuteDelivery>(
+      this, "execute_delivery",
+        std::bind(&CourierServer::handle_goal,
+          this, std::placeholders::_1, std::placeholders::_2),
+        std::bind(&CourierServer::handle_cancel,
+          this, std::placeholders::_1),
+        std::bind(&CourierServer::handle_accepted,
+          this, std::placeholders::_1));
+
+    RCLCPP_INFO(get_logger(),
+      "Action '/execute_delivery' is ready.");
   }
 
 private: 
-  // ---------------------------------------------------------------------------
-  // Validate courier configuration limits.
-  //
-  // Rejects invalid values at startup so configuration errors are detected
-  // immediately instead of causing unexpected behavior during a delivery.
-  // ---------------------------------------------------------------------------
-  void validate_configuration()
-  {
-    if (max_retries_ < 0) {
-      throw std::runtime_error(
-        "max_retries must be >= 0");
-    }
-
-    if (feedback_rate_hz_ <= 0.0) {
-      throw std::runtime_error(
-        "feedback_rate_hz must be > 0");
-    }
-
-    if (nav2_server_timeout_sec_ <= 0.0) {
-      throw std::runtime_error(
-        "nav2_server_timeout_sec must be > 0");
-    }
-
-    if (nav_goal_timeout_sec_ <= 0.0) {
-      throw std::runtime_error(
-        "nav_goal_timeout_sec must be > 0");
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Handle a new delivery submission request.
   //
@@ -199,6 +195,8 @@ private:
       "Received delivery request: '%s' -> '%s'",
       request->pickup.c_str(),
       request->dropoff.c_str());
+
+    std::lock_guard<std::mutex> lock(state_mutex_);
 
     // The robot only handles one delivery at a time.
     if (state_ != CourierState::IDLE) {
@@ -262,6 +260,156 @@ private:
   }
 
   // ---------------------------------------------------------------------------
+  // Validate a request to execute an accepted delivery job.
+  //
+  // The action goal is accepted only when the courier has a reserved job and the
+  // supplied job ID matches that reservation. This prevents callers from
+  // executing unknown, stale, or unrelated jobs.
+  // ---------------------------------------------------------------------------
+  rclcpp_action::GoalResponse handle_goal(
+    const rclcpp_action::GoalUUID &,
+    std::shared_ptr<const ExecuteDelivery::Goal> goal)
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+
+      RCLCPP_INFO(get_logger(),
+        "Received execution request for job '%s'.",
+        goal->job_id.c_str());
+
+      if (state_ != CourierState::RESERVED || !current_job_) {
+        RCLCPP_WARN(get_logger(),
+          "Rejected execution request: no reserved delivery job.");
+
+        return rclcpp_action::GoalResponse::REJECT;
+      }
+
+      if (goal->job_id != current_job_->id) {
+        RCLCPP_WARN(get_logger(),
+          "Rejected execution request: expected '%s', received '%s'.",
+          current_job_->id.c_str(),
+          goal->job_id.c_str());
+
+        return rclcpp_action::GoalResponse::REJECT;
+      }
+
+      RCLCPP_INFO(get_logger(),
+        "Accepted execution request for job '%s'.",
+        goal->job_id.c_str());
+
+      return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }
+
+  // ---------------------------------------------------------------------------
+  // Accept cancellation requests for a running delivery.
+  //
+  // At this stage the action execution itself responds to cancellation. Once
+  // Nav2 integration is added, the same cancellation path will also cancel the
+  // active `navigate_to_pose` goal so the physical robot stops promptly.
+  // ---------------------------------------------------------------------------
+  rclcpp_action::CancelResponse handle_cancel(
+    const std::shared_ptr<CourierGoalHandle>)
+    {
+      RCLCPP_WARN(get_logger(),
+        "Cancellation requested for the active delivery.");
+
+      return rclcpp_action::CancelResponse::ACCEPT;
+    }
+
+  // ---------------------------------------------------------------------------
+  // Start execution of an accepted delivery action goal.
+  //
+  // Delivery execution is moved to a separate thread so the ROS executor remains
+  // free to process service requests, action feedback, cancellation requests,
+  // and later Nav2 callbacks while the mission is running.
+  // ---------------------------------------------------------------------------
+  void handle_accepted(const std::shared_ptr<CourierGoalHandle> goal_handle){
+    std::thread(
+      [this, goal_handle]() {execute_delivery(goal_handle);}).detach();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Execute the currently reserved courier job.
+  //
+  // This first implementation simulates a short delivery while publishing action
+  // feedback. It verifies the complete custom action lifecycle before real Nav2
+  // navigation is introduced. The simulated section will later be replaced by
+  // pickup and dropoff NavigateToPose goals.
+  // ---------------------------------------------------------------------------
+  void execute_delivery(const std::shared_ptr<CourierGoalHandle> goal_handle)
+  {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      state_ = CourierState::RUNNING;
+    }
+
+    RCLCPP_INFO(get_logger(),
+      "Starting simulated delivery execution.");
+
+    auto feedback =
+      std::make_shared<ExecuteDelivery::Feedback>();
+
+    rclcpp::WallRate rate(feedback_rate_hz_);
+
+    for (int step = 0; step < 6; ++step) {
+
+      // Check whether the requester canceled the action.
+      if (goal_handle->is_canceling()) {
+
+        auto result =
+          std::make_shared<ExecuteDelivery::Result>();
+
+        result->success = false;
+        result->message = "delivery canceled";
+        result->failed_leg = "";
+
+        goal_handle->canceled(result);
+
+        RCLCPP_WARN(get_logger(), "Delivery ended as CANCELED.");
+
+        reset_job();
+        return;
+      }
+
+      feedback->leg = "pickup";
+      feedback->target =
+        current_job_ ? current_job_->pickup : "";
+
+      feedback->distance_remaining =
+        static_cast<float>(6 - step);
+
+      feedback->attempt = 1;
+
+      feedback->max_attempts =
+        static_cast<uint32_t>(max_retries_ + 1);
+
+      goal_handle->publish_feedback(feedback);
+
+      RCLCPP_INFO(get_logger(),
+        "Simulated feedback: pickup -> %s, %.1f m remaining",
+        feedback->target.c_str(),
+        feedback->distance_remaining);
+
+      rate.sleep();
+    }
+
+    auto result =
+      std::make_shared<ExecuteDelivery::Result>();
+
+    result->success = true;
+    result->message =
+      "simulated delivery completed successfully";
+    result->failed_leg = "";
+
+    goal_handle->succeed(result);
+
+    RCLCPP_INFO(get_logger(),
+      "Simulated delivery completed successfully.");
+
+    reset_job();
+  }
+
+
+  // ---------------------------------------------------------------------------
   // Generate the next process-local delivery job identifier.
   //
   // Job IDs use a simple sequential format (job_0001, job_0002, ...). They only
@@ -280,6 +428,50 @@ private:
     return stream.str();
   }
 
+  // ---------------------------------------------------------------------------
+  // Clear the current delivery and return the courier to the idle state.
+  //
+  // This is called whenever a job reaches a terminal state so the robot becomes
+  // available to accept a new delivery request.
+  // ---------------------------------------------------------------------------
+  void reset_job(){
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
+    current_job_.reset();
+    state_ = CourierState::IDLE;
+
+    RCLCPP_INFO(get_logger(), "Courier returned to IDLE.");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Validate courier configuration limits.
+  //
+  // Rejects invalid values at startup so configuration errors are detected
+  // immediately instead of causing unexpected behavior during a delivery.
+  // ---------------------------------------------------------------------------
+  void validate_configuration()
+  {
+    if (max_retries_ < 0) {
+      throw std::runtime_error(
+        "max_retries must be >= 0");
+    }
+
+    if (feedback_rate_hz_ <= 0.0) {
+      throw std::runtime_error(
+        "feedback_rate_hz must be > 0");
+    }
+
+    if (nav2_server_timeout_sec_ <= 0.0) {
+      throw std::runtime_error(
+        "nav2_server_timeout_sec must be > 0");
+    }
+
+    if (nav_goal_timeout_sec_ <= 0.0) {
+      throw std::runtime_error(
+        "nav_goal_timeout_sec must be > 0");
+    }
+  }
+
   std::string frame_id_;
 
   int max_retries_;
@@ -292,9 +484,13 @@ private:
 
   std::unordered_map<std::string, Location> locations_;
 
-  std::optional<DeliveryJob> current_job_;
-
   rclcpp::Service<SubmitDelivery>::SharedPtr submit_service_;
+
+  rclcpp_action::Server<ExecuteDelivery>::SharedPtr execute_action_server_;
+
+  std::mutex state_mutex_;
+
+  std::optional<DeliveryJob> current_job_;
 
   CourierState state_{CourierState::IDLE};
 
