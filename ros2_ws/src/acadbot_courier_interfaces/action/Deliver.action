@@ -1,0 +1,21 @@
+# Deliver.action — run a booked delivery. Minutes long, streams progress, cancellable.
+
+# ---- Goal ----
+string job_id            # must be a job the service already accepted
+---
+# ---- Result ----
+bool   success
+string job_id
+string failed_leg        # "" on success, else "pickup" or "dropoff"
+string message            # why it ended the way it did
+---
+# ---- Feedback ----
+string LEG_PICKUP="pickup"      # constants, so C++ never spells these by hand
+string LEG_DROPOFF="dropoff"
+
+string  job_id
+string  leg                     # LEG_PICKUP or LEG_DROPOFF
+string  target_location         # "reception"
+float32 distance_remaining      # metres, relayed from Nav2
+int32   attempt                 # 1, 2, 3...
+int32   max_attempts
