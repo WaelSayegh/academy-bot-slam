@@ -18,5 +18,15 @@ find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(acadbot_courier_interfaces REQUIRED)
 
+add_executable(courier_manager src/courier_manager.cpp)
+ament_target_dependencies(courier_manager rclcpp rclcpp_action geometry_msgs nav2_msgs tf2 tf2_geometry_msgs acadbot_courier_interfaces)
+
+install(TARGETS courier_manager
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install (DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}/
+)
 
 ament_package()
