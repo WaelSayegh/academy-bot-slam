@@ -31,11 +31,17 @@
 #include <sstream>
 #include <mutex>
 #include <thread>
+#include <future>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "tf2/LinearMath/Quaternion.h"
 #include "acadbot_courier_interfaces/srv/submit_delivery.hpp"
 #include "acadbot_courier_interfaces/action/execute_delivery.hpp"
+
+using namespace std::chrono_literals;
 
 using SubmitDelivery =
   acadbot_courier_interfaces::srv::SubmitDelivery;
@@ -45,6 +51,12 @@ using ExecuteDelivery =
 
 using CourierGoalHandle =
   rclcpp_action::ServerGoalHandle<ExecuteDelivery>;
+
+using NavigateToPose =
+  nav2_msgs::action::NavigateToPose;
+
+using NavGoalHandle =
+  rclcpp_action::ClientGoalHandle<NavigateToPose>;
 
 // Named navigation pose loaded from YAML.
 // Yaw is stored in radians and later converted to a quaternion for Nav2 goals.
@@ -69,6 +81,16 @@ enum class CourierState{
   IDLE,
   RESERVED,
   RUNNING
+};
+
+// Possible terminal outcomes of one Nav2 navigation leg.
+enum class NavigationOutcome
+{
+  SUCCEEDED,
+  ABORTED,
+  CANCELED,
+  REJECTED,
+  TIMED_OUT
 };
 
 class CourierServer : public rclcpp::Node{
@@ -98,7 +120,15 @@ public:
       declare_parameter<double>("nav2_server_timeout_sec", 10.0);
 
     nav_goal_timeout_sec_ =
-      declare_parameter<double>("nav_goal_timeout_sec", 120.0);
+      declare_parameter<double>("nav_goal_timeout_sec", 180.0);
+
+    nav_result_poll_period_ms_ =
+      declare_parameter<int>("nav_result_poll_period_ms", 100);
+
+    if (nav_result_poll_period_ms_ <= 0) {
+      throw std::runtime_error(
+      "nav_result_poll_period_ms must be > 0");
+    }
 
     // List of location names
     location_names_ =
@@ -152,6 +182,14 @@ public:
         location.yaw);
     }
 
+    // Create Nav2 client
+    nav2_client_ =
+      rclcpp_action::create_client<NavigateToPose>(
+       this, "navigate_to_pose");
+
+    RCLCPP_INFO(get_logger(),
+      "Nav2 'navigate_to_pose' action client created.");
+
     // Create SubmitDelivery service
     submit_service_ = create_service<SubmitDelivery>(
         "submit_delivery",
@@ -204,6 +242,20 @@ private:
       response->job_id = "";
       response->reason =
         "courier is busy with job " + current_job_->id;
+
+      RCLCPP_WARN(get_logger(),
+        "Rejected delivery request: %s",
+        response->reason.c_str());
+
+      return;
+    }
+
+    // Verify that the Nav2 action server is available.
+    if (!nav2_client_->action_server_is_ready()) {
+      response->accepted = false;
+      response->job_id = "";
+      response->reason =
+        "Nav2 navigate_to_pose action server is not available";
 
       RCLCPP_WARN(get_logger(),
         "Rejected delivery request: %s",
@@ -330,84 +382,346 @@ private:
   // ---------------------------------------------------------------------------
   // Execute the currently reserved courier job.
   //
-  // This first implementation simulates a short delivery while publishing action
-  // feedback. It verifies the complete custom action lifecycle before real Nav2
-  // navigation is introduced. The simulated section will later be replaced by
-  // pickup and dropoff NavigateToPose goals.
+  // The courier performs two sequential Nav2 navigation legs:
+  //   1. Navigate to the configured pickup location.
+  //   2. After pickup succeeds, navigate to the configured dropoff location.
+  //
+  // The dropoff leg is never started unless the pickup leg actually succeeds.
+  // Any Nav2 abort or cancellation is propagated honestly to the courier action
+  // and identifies which delivery leg failed.
   // ---------------------------------------------------------------------------
-  void execute_delivery(const std::shared_ptr<CourierGoalHandle> goal_handle)
+  void execute_delivery(
+    const std::shared_ptr<CourierGoalHandle> goal_handle)
   {
+    DeliveryJob job;
+
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      state_ = CourierState::RUNNING;
-    }
 
-    RCLCPP_INFO(get_logger(),
-      "Starting simulated delivery execution.");
+      if (!current_job_) {
+        RCLCPP_ERROR(get_logger(),
+          "Execution started without a reserved job.");
 
-    auto feedback =
-      std::make_shared<ExecuteDelivery::Feedback>();
-
-    rclcpp::WallRate rate(feedback_rate_hz_);
-
-    for (int step = 0; step < 6; ++step) {
-
-      // Check whether the requester canceled the action.
-      if (goal_handle->is_canceling()) {
-
-        auto result =
-          std::make_shared<ExecuteDelivery::Result>();
+        auto result = std::make_shared<ExecuteDelivery::Result>();
 
         result->success = false;
-        result->message = "delivery canceled";
-        result->failed_leg = "";
+        result->message = "no reserved delivery job";
+        result->failed_leg = "pickup";
 
-        goal_handle->canceled(result);
-
-        RCLCPP_WARN(get_logger(), "Delivery ended as CANCELED.");
-
-        reset_job();
+        goal_handle->abort(result);
+        state_ = CourierState::IDLE;
         return;
       }
 
-      feedback->leg = "pickup";
-      feedback->target =
-        current_job_ ? current_job_->pickup : "";
-
-      feedback->distance_remaining =
-        static_cast<float>(6 - step);
-
-      feedback->attempt = 1;
-
-      feedback->max_attempts =
-        static_cast<uint32_t>(max_retries_ + 1);
-
-      goal_handle->publish_feedback(feedback);
-
-      RCLCPP_INFO(get_logger(),
-        "Simulated feedback: pickup -> %s, %.1f m remaining",
-        feedback->target.c_str(),
-        feedback->distance_remaining);
-
-      rate.sleep();
+      state_ = CourierState::RUNNING;
+      job = *current_job_;
     }
 
-    auto result =
-      std::make_shared<ExecuteDelivery::Result>();
+    // -------------------------------------------------------------------------
+    // PICKUP LEG
+    // -------------------------------------------------------------------------
+
+    RCLCPP_INFO(get_logger(),
+      "Job %s starting PICKUP leg: %s",
+      job.id.c_str(),
+      job.pickup.c_str());
+
+    const NavigationOutcome pickup_result = navigate_to_location(job.pickup);
+
+    if (pickup_result != NavigationOutcome::SUCCEEDED) {
+      auto result = std::make_shared<ExecuteDelivery::Result>();
+
+      result->success = false;
+      result->failed_leg = "pickup";
+
+      if (pickup_result == NavigationOutcome::CANCELED) {
+        result->message = "delivery canceled during pickup";
+
+        goal_handle->canceled(result);
+
+        RCLCPP_WARN(get_logger(),
+          "Job %s canceled during pickup.",
+          job.id.c_str());
+      } 
+      else if (pickup_result == NavigationOutcome::TIMED_OUT) {
+        result->message = "pickup navigation timed out";
+        goal_handle->abort(result);
+
+        RCLCPP_ERROR(get_logger(),
+          "Job %s timed out during pickup.",
+          job.id.c_str());
+      } 
+      else {
+        result->message = "pickup navigation failed";
+
+        goal_handle->abort(result);
+
+        RCLCPP_ERROR(get_logger(),
+          "Job %s failed during pickup.",
+          job.id.c_str());
+      }
+
+      reset_job();
+      return;
+    }
+
+    RCLCPP_INFO(get_logger(),
+      "Job %s reached pickup '%s'.",
+      job.id.c_str(),
+      job.pickup.c_str());
+
+    // -------------------------------------------------------------------------
+    // DROPOFF LEG
+    // -------------------------------------------------------------------------
+
+    RCLCPP_INFO(get_logger(),
+      "Job %s starting DROPOFF leg: %s",
+      job.id.c_str(),
+      job.dropoff.c_str());
+
+    const NavigationOutcome dropoff_result = navigate_to_location(job.dropoff);
+
+    if (dropoff_result != NavigationOutcome::SUCCEEDED) {
+      auto result = std::make_shared<ExecuteDelivery::Result>();
+
+      result->success = false;
+      result->failed_leg = "dropoff";
+
+      if (dropoff_result == NavigationOutcome::CANCELED) {
+        result->message = "delivery canceled during dropoff";
+
+        goal_handle->canceled(result);
+
+        RCLCPP_WARN(get_logger(),
+          "Job %s canceled during dropoff.",
+          job.id.c_str());
+      } 
+      else if (dropoff_result == NavigationOutcome::TIMED_OUT) {
+        result->message = "dropoff navigation timed out";
+        goal_handle->abort(result);
+
+        RCLCPP_ERROR(get_logger(),
+          "Job %s timed out during dropoff.",
+          job.id.c_str());
+      } 
+      else {
+        result->message = "dropoff navigation failed";
+
+        goal_handle->abort(result);
+
+        RCLCPP_ERROR(get_logger(),
+          "Job %s failed during dropoff.",
+          job.id.c_str());
+      }
+
+      reset_job();
+      return;
+    }
+
+    RCLCPP_INFO(get_logger(),
+      "Job %s reached dropoff '%s'.",
+      job.id.c_str(),
+      job.dropoff.c_str());
+
+    // -------------------------------------------------------------------------
+    // DELIVERY SUCCESS
+    // -------------------------------------------------------------------------
+
+    auto result = std::make_shared<ExecuteDelivery::Result>();
 
     result->success = true;
-    result->message =
-      "simulated delivery completed successfully";
+    result->message = "delivery completed successfully";
     result->failed_leg = "";
 
     goal_handle->succeed(result);
 
     RCLCPP_INFO(get_logger(),
-      "Simulated delivery completed successfully.");
+      "Job %s completed successfully: %s -> %s",
+      job.id.c_str(),
+      job.pickup.c_str(),
+      job.dropoff.c_str());
 
     reset_job();
+  }  
+
+  // ---------------------------------------------------------------------------
+  // Convert a configured courier location into a Nav2 goal pose.
+  //
+  // Courier locations are stored in YAML as [x, y, yaw]. Nav2 expects a
+  // geometry_msgs::msg::PoseStamped, so this helper adds the configured map
+  // frame and current timestamp and converts the planar yaw angle into a
+  // quaternion orientation.
+  // ---------------------------------------------------------------------------
+  geometry_msgs::msg::PoseStamped make_pose(const Location & location)
+  {
+    geometry_msgs::msg::PoseStamped pose;
+
+    pose.header.frame_id = frame_id_;
+    pose.header.stamp = now();
+
+    pose.pose.position.x = location.x;
+    pose.pose.position.y = location.y;
+    pose.pose.position.z = 0.0;
+
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, location.yaw);
+
+    pose.pose.orientation.x = q.x();
+    pose.pose.orientation.y = q.y();
+    pose.pose.orientation.z = q.z();
+    pose.pose.orientation.w = q.w();
+
+    return pose;
   }
 
+  // ---------------------------------------------------------------------------
+  // Navigate to one configured named location using Nav2.
+  //
+  // The location name is resolved through the YAML-loaded location map and
+  // converted into a PoseStamped before being sent to Nav2's navigate_to_pose
+  // action server.
+  //
+  // This helper waits for Nav2's result from the delivery worker thread while
+  // the ROS executor remains free to process action callbacks. It returns a
+  // NavigationOutcome so the courier mission can distinguish success, abort,
+  // cancellation, and goal rejection.
+  // ---------------------------------------------------------------------------
+  NavigationOutcome navigate_to_location(
+    const std::string & location_name)
+  {
+    const auto location_it = locations_.find(location_name);
+
+    if (location_it == locations_.end()) {
+      RCLCPP_ERROR(get_logger(),
+        "Cannot navigate to unknown location '%s'.",
+        location_name.c_str());
+
+      return NavigationOutcome::REJECTED;
+    }
+
+    NavigateToPose::Goal nav_goal;
+    nav_goal.pose = make_pose(location_it->second);
+
+    RCLCPP_INFO(get_logger(),
+      "Sending Nav2 goal to '%s' at (%.4f, %.4f, yaw=%.4f).",
+      location_name.c_str(),
+      location_it->second.x,
+      location_it->second.y,
+      location_it->second.yaw);
+
+    rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
+
+    options.feedback_callback =
+      [this, location_name](NavGoalHandle::SharedPtr,
+        const std::shared_ptr<const NavigateToPose::Feedback> feedback)
+        {
+          RCLCPP_INFO_THROTTLE(get_logger(),
+            *get_clock(), 1000,
+            "Navigating to '%s': %.2f m remaining",
+            location_name.c_str(),
+            feedback->distance_remaining);
+        };
+
+    auto goal_future =
+      nav2_client_->async_send_goal(nav_goal, options);
+
+    // Wait for Nav2 to accept or reject the goal.
+    if (goal_future.wait_for(std::chrono::seconds(
+      static_cast<int>(nav2_server_timeout_sec_))) !=
+        std::future_status::ready)
+    {
+      RCLCPP_ERROR(get_logger(),
+        "Timed out waiting for Nav2 to accept goal '%s'.",
+        location_name.c_str());
+
+      return NavigationOutcome::REJECTED;
+    }
+
+    auto nav_goal_handle = goal_future.get();
+
+    if (!nav_goal_handle) {
+      RCLCPP_ERROR(get_logger(),
+        "Nav2 rejected goal for '%s'.",
+        location_name.c_str());
+
+      return NavigationOutcome::REJECTED;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      active_nav_goal_ = nav_goal_handle;
+    }
+
+    RCLCPP_INFO(get_logger(),
+      "Nav2 accepted goal for '%s'.",
+      location_name.c_str());
+
+    auto result_future =
+      nav2_client_->async_get_result(nav_goal_handle);
+
+    const auto start_time = now();
+
+    while (result_future.wait_for(
+      std::chrono::milliseconds(nav_result_poll_period_ms_))
+        != std::future_status::ready) 
+    {
+
+      const double elapsed = (now() - start_time).seconds();
+
+      if (elapsed > nav_goal_timeout_sec_) {
+        RCLCPP_ERROR(get_logger(),
+          "Navigation to '%s' exceeded timeout of %.1f seconds.",
+          location_name.c_str(),
+          nav_goal_timeout_sec_);
+
+        nav2_client_->async_cancel_goal(nav_goal_handle);
+
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          active_nav_goal_.reset();
+        }
+
+        return NavigationOutcome::ABORTED;
+      }
+    }
+
+    const auto result = result_future.get();
+
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      active_nav_goal_.reset();
+    }
+
+    switch (result.code) {
+      case rclcpp_action::ResultCode::SUCCEEDED:
+        RCLCPP_INFO(get_logger(),
+          "Reached location '%s'.",
+          location_name.c_str());
+
+        return NavigationOutcome::SUCCEEDED;
+
+      case rclcpp_action::ResultCode::ABORTED:
+        RCLCPP_ERROR(get_logger(),
+          "Nav2 aborted navigation to '%s'.",
+          location_name.c_str());
+
+        return NavigationOutcome::ABORTED;
+
+      case rclcpp_action::ResultCode::CANCELED:
+        RCLCPP_WARN(get_logger(),
+          "Navigation to '%s' was canceled.",
+          location_name.c_str());
+
+        return NavigationOutcome::CANCELED;
+
+      default:
+        RCLCPP_ERROR(get_logger(),
+          "Navigation to '%s' ended with an unknown result.",
+          location_name.c_str());
+
+        return NavigationOutcome::ABORTED;
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Generate the next process-local delivery job identifier.
@@ -475,6 +789,7 @@ private:
   std::string frame_id_;
 
   int max_retries_;
+  int nav_result_poll_period_ms_;
 
   double feedback_rate_hz_;
   double nav2_server_timeout_sec_;
@@ -487,6 +802,10 @@ private:
   rclcpp::Service<SubmitDelivery>::SharedPtr submit_service_;
 
   rclcpp_action::Server<ExecuteDelivery>::SharedPtr execute_action_server_;
+
+  rclcpp_action::Client<NavigateToPose>::SharedPtr nav2_client_;
+
+  NavGoalHandle::SharedPtr active_nav_goal_;
 
   std::mutex state_mutex_;
 
