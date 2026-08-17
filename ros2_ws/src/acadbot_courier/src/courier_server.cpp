@@ -380,6 +380,72 @@ private:
   }
 
   // ---------------------------------------------------------------------------
+  // Execute one courier navigation leg with configurable retry handling.
+  //
+  // A leg is attempted once initially, then retried up to max_retries_ times if
+  // Nav2 aborts or the courier navigation timeout is reached.
+  //
+  // Cancellation is never retried because it represents an explicit request to
+  // stop the delivery.
+  //
+  // The current attempt number is passed to navigate_to_location() so action
+  // feedback accurately reports progress such as attempt 1 of 2.
+  // ---------------------------------------------------------------------------
+  NavigationOutcome navigate_with_retries(
+    const std::string & leg,
+    const std::string & target,
+    const std::shared_ptr<CourierGoalHandle> & goal_handle)
+  {
+    const uint32_t max_attempts =
+      static_cast<uint32_t>(max_retries_ + 1);
+
+    NavigationOutcome last_outcome = NavigationOutcome::ABORTED;
+
+    for (uint32_t attempt = 1; attempt <= max_attempts; ++attempt) {
+
+      RCLCPP_INFO(get_logger(),
+        "Starting %s navigation attempt %u of %u to '%s'.",
+        leg.c_str(),
+        attempt,
+        max_attempts,
+        target.c_str());
+
+      const NavigationOutcome last_outcome =
+        navigate_to_location(
+          leg,
+          target,
+          attempt,
+          goal_handle);
+
+      if (last_outcome == NavigationOutcome::SUCCEEDED) {
+        return NavigationOutcome::SUCCEEDED;
+      }
+
+      if (last_outcome == NavigationOutcome::CANCELED) {
+        return NavigationOutcome::CANCELED;
+      }
+
+      if (attempt < max_attempts) {
+        RCLCPP_WARN(get_logger(),
+          "%s navigation to '%s' failed on attempt %u of %u. Retrying.",
+          leg.c_str(),
+          target.c_str(),
+          attempt,
+          max_attempts);
+      } 
+      else {
+        RCLCPP_ERROR(get_logger(),
+          "%s navigation to '%s' failed after %u attempt(s).",
+          leg.c_str(),
+          target.c_str(),
+          max_attempts);
+      }
+    }
+
+    return last_outcome;
+  }
+
+  // ---------------------------------------------------------------------------
   // Execute the currently reserved courier job.
   //
   // The courier performs two sequential Nav2 navigation legs:
@@ -394,8 +460,6 @@ private:
     const std::shared_ptr<CourierGoalHandle> goal_handle)
   {
     DeliveryJob job;
-
-    uint32_t current_attempt = 1;
 
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -429,10 +493,9 @@ private:
       job.pickup.c_str());
 
     const NavigationOutcome pickup_result = 
-      navigate_to_location(
+      navigate_with_retries(
         "pickup",
         job.pickup,
-        current_attempt,
         goal_handle);
 
     if (pickup_result != NavigationOutcome::SUCCEEDED) {
@@ -487,10 +550,9 @@ private:
       job.dropoff.c_str());
 
     const NavigationOutcome dropoff_result =
-      navigate_to_location(
+      navigate_with_retries(
         "dropoff",
         job.dropoff,
-        current_attempt,
         goal_handle);
 
     if (dropoff_result != NavigationOutcome::SUCCEEDED) {
