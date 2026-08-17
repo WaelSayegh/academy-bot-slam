@@ -14,7 +14,14 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(acadbot_courier_interfaces REQUIRED)
 
-add_executable(courier_server src/courier_server.cpp)
+add_executable(courier_server
+  src/courier_server.cpp
+  src/navigation_manager.cpp
+)
+target_include_directories(courier_server PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
 ament_target_dependencies(courier_server
   rclcpp
   rclcpp_action
@@ -27,6 +34,11 @@ ament_target_dependencies(courier_server
 install(TARGETS
   courier_server
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  include/
+  DESTINATION include
 )
 
 install(DIRECTORY
