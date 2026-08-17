@@ -352,17 +352,17 @@ private:
     }
 
   // ---------------------------------------------------------------------------
-  // Accept cancellation requests for a running delivery.
+  // Accept cancellation requests for the active courier action.
   //
-  // At this stage the action execution itself responds to cancellation. Once
-  // Nav2 integration is added, the same cancellation path will also cancel the
-  // active `navigate_to_pose` goal so the physical robot stops promptly.
+  // The execution thread detects the cancellation request and propagates it to
+  // the currently active Nav2 NavigateToPose goal.
   // ---------------------------------------------------------------------------
   rclcpp_action::CancelResponse handle_cancel(
-    const std::shared_ptr<CourierGoalHandle>)
+    const std::shared_ptr<CourierGoalHandle> goal_handle)
     {
       RCLCPP_WARN(get_logger(),
-        "Cancellation requested for the active delivery.");
+        "Cancellation requested for courier job '%s'.",
+        goal_handle->get_goal()->job_id.c_str());
 
       return rclcpp_action::CancelResponse::ACCEPT;
     }
@@ -724,10 +724,31 @@ private:
 
     const double feedback_period_sec = 1.0 / feedback_rate_hz_;
 
+    bool nav_cancel_requested = false;
+    bool navigation_timed_out = false;
+
     while (result_future.wait_for(
       std::chrono::milliseconds(nav_result_poll_period_ms_))
         != std::future_status::ready) 
     {
+      // ---------------------------------------------------------
+      // Courier action cancellation
+      // ---------------------------------------------------------
+
+      if (courier_goal_handle->is_canceling() &&
+        !nav_cancel_requested)
+      {
+        RCLCPP_WARN(get_logger(),
+          "Courier action canceled while navigating to '%s'. "
+          "Canceling active Nav2 goal.",
+          location_name.c_str());
+
+        nav2_client_->async_cancel_goal(nav_goal_handle);
+
+        nav_cancel_requested = true;
+      }
+
+
       // ---------------------------------------------------------
       // Courier action feedback
       // ---------------------------------------------------------
@@ -750,7 +771,7 @@ private:
           have_distance = nav_feedback_received_;
         }
 
-        if (have_distance) {
+        if (have_distance && !courier_goal_handle->is_canceling()) {
           publish_delivery_feedback(
             courier_goal_handle,
             leg,
@@ -762,13 +783,15 @@ private:
         last_feedback_publish = wall_now;
       }
 
+
       // ---------------------------------------------------------
       // Courier navigation timeout
       // ---------------------------------------------------------
 
       const double elapsed = (now() - start_time).seconds();
 
-      if (elapsed >= nav_goal_timeout_sec_) {
+      if (elapsed >= nav_goal_timeout_sec_ && !nav_cancel_requested) 
+      {
         RCLCPP_ERROR(get_logger(),
           "Navigation to '%s' exceeded timeout of %.1f seconds.",
           location_name.c_str(),
@@ -776,14 +799,13 @@ private:
 
         nav2_client_->async_cancel_goal(nav_goal_handle);
 
-        {
-          std::lock_guard<std::mutex> lock(state_mutex_);
-          active_nav_goal_.reset();
-        }
+        nav_cancel_requested = true;
 
-        return NavigationOutcome::TIMED_OUT;
+        // Remember that this was caused by timeout rather than user cancellation.
+        navigation_timed_out = true;
       }
     }
+
 
     // ---------------------------------------------------------
     // Process the final Nav2 result
@@ -794,6 +816,14 @@ private:
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       active_nav_goal_.reset();
+    }
+
+    if (navigation_timed_out) {
+      RCLCPP_ERROR(get_logger(),
+        "Navigation to '%s' stopped after courier timeout.",
+        location_name.c_str());
+
+      return NavigationOutcome::TIMED_OUT;
     }
 
     switch (result.code) {
