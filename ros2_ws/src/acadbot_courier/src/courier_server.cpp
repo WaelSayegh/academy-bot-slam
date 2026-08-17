@@ -395,6 +395,8 @@ private:
   {
     DeliveryJob job;
 
+    uint32_t current_attempt = 1;
+
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
 
@@ -426,7 +428,12 @@ private:
       job.id.c_str(),
       job.pickup.c_str());
 
-    const NavigationOutcome pickup_result = navigate_to_location(job.pickup);
+    const NavigationOutcome pickup_result = 
+      navigate_to_location(
+        "pickup",
+        job.pickup,
+        current_attempt,
+        goal_handle);
 
     if (pickup_result != NavigationOutcome::SUCCEEDED) {
       auto result = std::make_shared<ExecuteDelivery::Result>();
@@ -479,7 +486,12 @@ private:
       job.id.c_str(),
       job.dropoff.c_str());
 
-    const NavigationOutcome dropoff_result = navigate_to_location(job.dropoff);
+    const NavigationOutcome dropoff_result =
+      navigate_to_location(
+        "dropoff",
+        job.dropoff,
+        current_attempt,
+        goal_handle);
 
     if (dropoff_result != NavigationOutcome::SUCCEEDED) {
       auto result = std::make_shared<ExecuteDelivery::Result>();
@@ -575,6 +587,34 @@ private:
   }
 
   // ---------------------------------------------------------------------------
+  // Publish human-readable progress for the active courier action.
+  //
+  // Feedback identifies the current delivery leg, named target, latest remaining
+  // distance reported by Nav2, and the current navigation attempt. The maximum
+  // number of attempts comes from the configured retry limit.
+  // ---------------------------------------------------------------------------
+  void publish_delivery_feedback(
+    const std::shared_ptr<CourierGoalHandle> & goal_handle,
+    const std::string & leg,
+    const std::string & target,
+    double distance_remaining,
+    uint32_t attempt)
+  {
+    auto feedback =
+      std::make_shared<ExecuteDelivery::Feedback>();
+
+    feedback->leg = leg;
+    feedback->target = target;
+    feedback->distance_remaining =
+      static_cast<float>(distance_remaining);
+    feedback->attempt = attempt;
+    feedback->max_attempts =
+      static_cast<uint32_t>(max_retries_ + 1);
+
+    goal_handle->publish_feedback(feedback);
+  }
+
+  // ---------------------------------------------------------------------------
   // Navigate to one configured named location using Nav2.
   //
   // The location name is resolved through the YAML-loaded location map and
@@ -587,16 +627,28 @@ private:
   // cancellation, and goal rejection.
   // ---------------------------------------------------------------------------
   NavigationOutcome navigate_to_location(
-    const std::string & location_name)
+    const std::string & leg,
+    const std::string & location_name,
+    uint32_t attempt,
+    const std::shared_ptr<CourierGoalHandle> & courier_goal_handle)
   {
     const auto location_it = locations_.find(location_name);
 
+    // Verify that the requested location exists in the configured map.
     if (location_it == locations_.end()) {
       RCLCPP_ERROR(get_logger(),
         "Cannot navigate to unknown location '%s'.",
         location_name.c_str());
 
       return NavigationOutcome::REJECTED;
+    }
+    
+    // Reset the latest distance remaining and feedback flag before sending a new goal.
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+
+      latest_distance_remaining_ = 0.0;
+      nav_feedback_received_ = false;
     }
 
     NavigateToPose::Goal nav_goal;
@@ -615,9 +667,16 @@ private:
       [this, location_name](NavGoalHandle::SharedPtr,
         const std::shared_ptr<const NavigateToPose::Feedback> feedback)
         {
-          RCLCPP_INFO_THROTTLE(get_logger(),
-            *get_clock(), 1000,
-            "Navigating to '%s': %.2f m remaining",
+          {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+
+            latest_distance_remaining_ = feedback->distance_remaining;
+
+            nav_feedback_received_ = true;
+          }
+
+          RCLCPP_DEBUG(get_logger(),
+            "Nav2 feedback for '%s': %.2f m remaining",
             location_name.c_str(),
             feedback->distance_remaining);
         };
@@ -661,14 +720,55 @@ private:
 
     const auto start_time = now();
 
+    auto last_feedback_publish = std::chrono::steady_clock::now();
+
+    const double feedback_period_sec = 1.0 / feedback_rate_hz_;
+
     while (result_future.wait_for(
       std::chrono::milliseconds(nav_result_poll_period_ms_))
         != std::future_status::ready) 
     {
+      // ---------------------------------------------------------
+      // Courier action feedback
+      // ---------------------------------------------------------
+
+      const auto wall_now = std::chrono::steady_clock::now();
+
+      const double time_since_feedback =
+        std::chrono::duration<double>(
+          wall_now - last_feedback_publish).count();
+
+      if (time_since_feedback >= feedback_period_sec) {
+
+        double distance = 0.0;
+        bool have_distance = false;
+
+        {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+
+          distance = latest_distance_remaining_;
+          have_distance = nav_feedback_received_;
+        }
+
+        if (have_distance) {
+          publish_delivery_feedback(
+            courier_goal_handle,
+            leg,
+            location_name,
+            distance,
+            attempt);
+        }
+
+        last_feedback_publish = wall_now;
+      }
+
+      // ---------------------------------------------------------
+      // Courier navigation timeout
+      // ---------------------------------------------------------
 
       const double elapsed = (now() - start_time).seconds();
 
-      if (elapsed > nav_goal_timeout_sec_) {
+      if (elapsed >= nav_goal_timeout_sec_) {
         RCLCPP_ERROR(get_logger(),
           "Navigation to '%s' exceeded timeout of %.1f seconds.",
           location_name.c_str(),
@@ -681,9 +781,13 @@ private:
           active_nav_goal_.reset();
         }
 
-        return NavigationOutcome::ABORTED;
+        return NavigationOutcome::TIMED_OUT;
       }
     }
+
+    // ---------------------------------------------------------
+    // Process the final Nav2 result
+    // ---------------------------------------------------------
 
     const auto result = result_future.get();
 
@@ -794,6 +898,9 @@ private:
   double feedback_rate_hz_;
   double nav2_server_timeout_sec_;
   double nav_goal_timeout_sec_;
+  double latest_distance_remaining_{0.0};
+
+  bool nav_feedback_received_{false};
 
   std::vector<std::string> location_names_;
 
