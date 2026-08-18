@@ -29,6 +29,8 @@ public:
     linear_speed_  = declare_parameter<double>("linear_speed", 0.25);   // m/s
     angular_speed_ = declare_parameter<double>("angular_speed", 0.6);   // rad/s
 
+    target_laps_ = declare_parameter<int>("laps", 0);  // how many times to drive the square (0 means run forever)
+
     // Time to cover one side, and time to turn 90 degrees, at the set speeds.
     drive_time_ = side_length_ / linear_speed_;
     turn_time_  = (M_PI / 2.0) / angular_speed_;
@@ -38,17 +40,32 @@ public:
     // 20 Hz control loop.
     timer_ = create_wall_timer(50ms, std::bind(&SquareDriver::on_timer, this));
     phase_start_ = now();
-
+    
     RCLCPP_INFO(get_logger(),
-      "square_driver: side=%.2fm  v=%.2fm/s  w=%.2frad/s  (drive %.1fs / turn %.1fs)",
-      side_length_, linear_speed_, angular_speed_, drive_time_, turn_time_);
+    "square_driver: side=%.2fm  v=%.2fm/s  w=%.2frad/s  (drive %.1fs / turn %.1fs)",
+    side_length_, linear_speed_, angular_speed_, drive_time_, turn_time_);
   }
-
-private:
+  
+  private:
   enum class Phase { DRIVE, TURN };
-
+  
   void on_timer()
   {
+    if (target_laps_ > 0 && laps_completed_ >= target_laps_) {
+      // 1. Publish zero Twist to bring the robot to a complete stop
+      auto stop_msg = geometry_msgs::msg::Twist();
+      stop_msg.linear.x = 0.0;
+      stop_msg.angular.z = 0.0;
+      cmd_pub_->publish(stop_msg);
+      
+      // 2. Log summary
+      RCLCPP_INFO(this->get_logger(), "Completed target of %d lap(s). Shutting down node cleanly.", target_laps_);
+      
+      // 3. Initiate clean ROS 2 shutdown
+      rclcpp::shutdown();
+      return;
+    }
+
     const double elapsed = (now() - phase_start_).seconds();
     geometry_msgs::msg::Twist cmd;
 
@@ -66,6 +83,7 @@ private:
           RCLCPP_INFO(get_logger(),
             "Completed a full loop (%d sides). Watch the odometry drift in RViz!",
             sides_done_);
+          laps_completed_++;
         }
       }
     }
@@ -87,6 +105,8 @@ private:
   Phase phase_{Phase::DRIVE};
   rclcpp::Time phase_start_;
   int sides_done_{0};
+  int target_laps_{0};
+  int laps_completed_{0};
 };
 
 int main(int argc, char ** argv)

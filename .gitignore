@@ -20,3 +20,5 @@ env/
 *.swp
 *~
 .DS_Store
+core
+ros2_ws/core

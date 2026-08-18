@@ -5,7 +5,7 @@ find_package(ament_cmake REQUIRED)
 
 # Install the description assets so other packages can $(find ...) them.
 install(
-  DIRECTORY urdf meshes rviz launch
+  DIRECTORY urdf rviz launch #meshes
   DESTINATION share/${PROJECT_NAME}
 )
 
