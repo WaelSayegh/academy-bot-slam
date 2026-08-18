@@ -1,0 +1,14 @@
+# courier.yaml — named locations and operating limits for the courier.
+#
+# Coordinates below are PLACEHOLDERS in the map frame — replace with values
+# surveyed in RViz (Publish Point) before relying on them for navigation.
+courier_node:
+  ros__parameters:
+    location_names: ["reception", "lab_bench", "store_room", "charging_dock"]
+    locations:
+      reception:     {x: 0.8, y: 4.0, yaw:  0.00}
+      lab_bench:     {x: 5.8, y: 3.6, yaw:  1.57}
+      store_room:    {x: 6.2, y: 0.8, yaw: -1.57}
+      charging_dock: {x: 0.6, y: 0.6, yaw:  0.00}
+
+    booking_timeout_sec: 120.0   # booked-but-never-run jobs expire
