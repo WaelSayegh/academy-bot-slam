@@ -159,13 +159,20 @@ private:
     if (leg_timeout_timer_) {
       leg_timeout_timer_->cancel();
     }
+    // Tags this attempt so late/stale callbacks from a superseded goal
+    // (e.g. a cancel that Nav2 hadn't actually honored yet) can be told
+    // apart from the attempt we're currently tracking and ignored.
+    const uint64_t token = ++attempt_token_;
     leg_timeout_timer_ = create_wall_timer(
       std::chrono::duration<double>(leg_goal_timeout_),
-      std::bind(&CourierManager::on_leg_timeout, this));
+      [this, token]() { on_leg_timeout(token); });
 
     rclcpp_action::Client<NavigateToPose>::SendGoalOptions opts;
     opts.goal_response_callback =
-      [this](NavGoalHandle::SharedPtr gh) {
+      [this, token](NavGoalHandle::SharedPtr gh) {
+        if (token != attempt_token_) {
+          return;
+        }
         current_nav_goal_handle_ = gh;
         if (!gh) {
           RCLCPP_WARN(get_logger(), "Nav2 rejected the goal outright.");
@@ -173,8 +180,11 @@ private:
         }
       };
     opts.feedback_callback =
-      [this](NavGoalHandle::SharedPtr,
+      [this, token](NavGoalHandle::SharedPtr,
              const std::shared_ptr<const NavigateToPose::Feedback> fb) {
+        if (token != attempt_token_) {
+          return;
+        }
         auto courier_fb = std::make_shared<ExecuteDelivery::Feedback>();
         courier_fb->leg = (current_leg_ == Leg::Pickup) ? "to_pickup" : "to_dropoff";
         courier_fb->target = (current_leg_ == Leg::Pickup) ? job_pickup_ : job_dropoff_;
@@ -183,7 +193,10 @@ private:
         current_goal_handle_->publish_feedback(courier_fb);
       };
     opts.result_callback =
-      [this](const NavGoalHandle::WrappedResult & result) {
+      [this, token](const NavGoalHandle::WrappedResult & result) {
+        if (token != attempt_token_) {
+          return;
+        }
         handle_nav_result(result);
       };
 
@@ -251,8 +264,11 @@ private:
   // Fires if a single navigate_to_pose attempt neither succeeds nor gets
   // ABORTED by Nav2 within leg_goal_timeout_ — e.g. an unbounded recovery
   // loop. Treated the same as an ABORTED attempt (req 7).
-  void on_leg_timeout()
+  void on_leg_timeout(uint64_t token)
   {
+    if (token != attempt_token_) {
+      return;  // stale timer for an attempt we've already moved past
+    }
     leg_timeout_timer_->cancel();
 
     // user-requested cancel is already in flight let handle_nav_result's
@@ -311,6 +327,7 @@ private:
   std::string job_pickup_, job_dropoff_;
   Leg current_leg_{Leg::Pickup};
   uint32_t current_attempt_{1};
+  uint64_t attempt_token_{0};
 };
 
 int main(int argc, char ** argv)
