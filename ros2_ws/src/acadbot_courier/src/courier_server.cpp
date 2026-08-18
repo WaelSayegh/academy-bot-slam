@@ -157,57 +157,33 @@ void CourierServer::handle_submit_delivery(
 
   // The robot only handles one delivery at a time.
   if (state_ != CourierState::IDLE) {
-    response->accepted = false;
-    response->job_id = "";
-    response->reason =
-      "courier is busy with job " + current_job_->id;
-
-    RCLCPP_WARN(get_logger(),
-      "Rejected delivery request: %s",
-      response->reason.c_str());
-
+    reject_delivery_request(
+      response,
+      "courier is busy with job " + current_job_->id);
     return;
   }
 
   // Verify that the Nav2 action server is available.
   if (!navigation_manager_->action_server_is_ready()) {
-    response->accepted = false;
-    response->job_id = "";
-    response->reason =
-      "Nav2 navigate_to_pose action server is not available";
-
-    RCLCPP_WARN(get_logger(),
-      "Rejected delivery request: %s",
-      response->reason.c_str());
-
+    reject_delivery_request(
+      response,
+      "Nav2 navigate_to_pose action server is not available");
     return;
   }
 
   // Validate pickup location.
   if (locations_.find(request->pickup) == locations_.end()) {
-    response->accepted = false;
-    response->job_id = "";
-    response->reason =
-      "unknown pickup location: " + request->pickup;
-
-    RCLCPP_WARN(get_logger(),
-      "Rejected delivery request: %s",
-      response->reason.c_str());
-
+    reject_delivery_request(
+      response,
+      "unknown pickup location: " + request->pickup);
     return;
   }
 
   // Validate dropoff location.
   if (locations_.find(request->dropoff) == locations_.end()) {
-    response->accepted = false;
-    response->job_id = "";
-    response->reason =
-      "unknown dropoff location: " + request->dropoff;
-
-      RCLCPP_WARN(get_logger(),
-      "Rejected delivery request: %s",
-      response->reason.c_str());
-
+    reject_delivery_request(
+      response,
+      "unknown dropoff location: " + request->dropoff);
     return;
   }
 
@@ -323,38 +299,7 @@ void CourierServer::execute_delivery(
       goal_handle);
 
   if (pickup_result != NavigationOutcome::SUCCEEDED) {
-    auto result = std::make_shared<ExecuteDelivery::Result>();
-
-    result->success = false;
-    result->failed_leg = "pickup";
-
-    if (pickup_result == NavigationOutcome::CANCELED) {
-      result->message = "delivery canceled during pickup";
-
-      goal_handle->canceled(result);
-
-      RCLCPP_WARN(get_logger(),
-        "Job %s canceled during pickup.",
-        job.id.c_str());
-    } 
-    else if (pickup_result == NavigationOutcome::TIMED_OUT) {
-      result->message = "pickup navigation timed out";
-      goal_handle->abort(result);
-
-      RCLCPP_ERROR(get_logger(),
-        "Job %s timed out during pickup.",
-        job.id.c_str());
-    } 
-    else {
-      result->message = "pickup navigation failed";
-
-      goal_handle->abort(result);
-
-      RCLCPP_ERROR(get_logger(),
-        "Job %s failed during pickup.",
-        job.id.c_str());
-    }
-
+    handle_navigation_failure(goal_handle, job, "pickup", pickup_result);
     reset_job();
     return;
   }
@@ -380,38 +325,7 @@ void CourierServer::execute_delivery(
       goal_handle);
 
   if (dropoff_result != NavigationOutcome::SUCCEEDED) {
-    auto result = std::make_shared<ExecuteDelivery::Result>();
-
-    result->success = false;
-    result->failed_leg = "dropoff";
-
-    if (dropoff_result == NavigationOutcome::CANCELED) {
-      result->message = "delivery canceled during dropoff";
-
-      goal_handle->canceled(result);
-
-      RCLCPP_WARN(get_logger(),
-        "Job %s canceled during dropoff.",
-        job.id.c_str());
-    } 
-    else if (dropoff_result == NavigationOutcome::TIMED_OUT) {
-      result->message = "dropoff navigation timed out";
-      goal_handle->abort(result);
-
-      RCLCPP_ERROR(get_logger(),
-        "Job %s timed out during dropoff.",
-        job.id.c_str());
-    } 
-    else {
-      result->message = "dropoff navigation failed";
-
-      goal_handle->abort(result);
-
-      RCLCPP_ERROR(get_logger(),
-        "Job %s failed during dropoff.",
-        job.id.c_str());
-    }
-
+    handle_navigation_failure(goal_handle, job, "dropoff", dropoff_result);
     reset_job();
     return;
   }
@@ -440,6 +354,61 @@ void CourierServer::execute_delivery(
     job.dropoff.c_str());
 
   reset_job();
+}
+
+void CourierServer::handle_navigation_failure(
+  const std::shared_ptr<CourierGoalHandle> goal_handle,
+  const DeliveryJob & job,
+  const char * leg_name,
+  NavigationOutcome navigation_result)
+{
+  auto result = std::make_shared<ExecuteDelivery::Result>();
+
+  result->success = false;
+  result->failed_leg = leg_name;
+
+  if (navigation_result == NavigationOutcome::CANCELED) {
+    result->message = std::string("delivery canceled during ") + leg_name;
+
+    goal_handle->canceled(result);
+
+    RCLCPP_WARN(get_logger(),
+      "Job %s canceled during %s.",
+      job.id.c_str(),
+      leg_name);
+  }
+  else if (navigation_result == NavigationOutcome::TIMED_OUT) {
+    result->message = std::string(leg_name) + " navigation timed out";
+    goal_handle->abort(result);
+
+    RCLCPP_ERROR(get_logger(),
+      "Job %s timed out during %s.",
+      job.id.c_str(),
+      leg_name);
+  }
+  else {
+    result->message = std::string(leg_name) + " navigation failed";
+
+    goal_handle->abort(result);
+
+    RCLCPP_ERROR(get_logger(),
+      "Job %s failed during %s.",
+      job.id.c_str(),
+      leg_name);
+  }
+}
+
+void CourierServer::reject_delivery_request(
+  std::shared_ptr<SubmitDelivery::Response> response,
+  const std::string & reason)
+{
+  response->accepted = false;
+  response->job_id = "";
+  response->reason = reason;
+
+  RCLCPP_WARN(get_logger(),
+    "Rejected delivery request: %s",
+    response->reason.c_str());
 }
 
 std::string CourierServer::generate_job_id()

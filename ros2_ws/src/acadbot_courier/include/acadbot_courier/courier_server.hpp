@@ -20,16 +20,10 @@ using SubmitDelivery =
 
 class CourierServer : public rclcpp::Node{
 public:
-  // ---------------------------------------------------------------------------
-  // Handle a new delivery submission request.
+  // Initialize the courier server node.
   //
-  // A request is accepted only when the courier is idle and both the pickup and
-  // dropoff names exist in the configured location map. Accepted requests are
-  // assigned a unique job ID and stored as the current reserved job.
-  //
-  // Invalid locations or requests received while the courier is busy are
-  // rejected immediately with a human-readable reason.
-  // ---------------------------------------------------------------------------
+  // Loads configuration parameters and named locations, creates the
+  // NavigationManager, SubmitDelivery service, and ExecuteDelivery action server.
   CourierServer();
 
 private:
@@ -89,6 +83,18 @@ private:
   // ---------------------------------------------------------------------------
   void execute_delivery(
     const std::shared_ptr<CourierGoalHandle> goal_handle);
+
+  // Handle a terminal navigation failure for a delivery leg.
+  void handle_navigation_failure(
+    const std::shared_ptr<CourierGoalHandle> goal_handle,
+    const DeliveryJob & job,
+    const char * leg_name,
+    NavigationOutcome navigation_result);
+
+  // Reject a delivery submission with a reason and warning log.
+  void reject_delivery_request(
+    std::shared_ptr<SubmitDelivery::Response> response,
+    const std::string & reason);
 
   // ---------------------------------------------------------------------------
   // Generate the next process-local delivery job identifier.

@@ -201,8 +201,8 @@ NavigationOutcome NavigationManager::navigate_to_location(
     nav2_client_->async_send_goal(nav_goal, options);
 
   // Wait for Nav2 to accept or reject the goal.
-  if (goal_future.wait_for(std::chrono::seconds(
-    static_cast<int>(nav2_server_timeout_sec_))) !=
+  if (goal_future.wait_for(std::chrono::duration<double>(
+    nav2_server_timeout_sec_)) !=
       std::future_status::ready)
   {
     RCLCPP_ERROR(node_->get_logger(),
