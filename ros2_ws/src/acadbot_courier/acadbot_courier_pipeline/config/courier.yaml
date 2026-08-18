@@ -1,0 +1,14 @@
+courier_manager:
+  ros__parameters:
+    use_sim_time: true
+    frame_id: "map"
+    max_retries: 2
+    nav2_wait_timeout: 30.0
+    leg_goal_timeout: 50.0
+    location_names: ["reception", "lab_bench", "workshop"]
+    # x,   y,   yaw borrowed from acadbot_control/config/patrol_waypoints.yaml'
+    location_poses: [
+      0.6, 4.2,  0.00, #NW corner of the left room 
+      6.2, 4.2,  3.14, # north end of the right room, opposite sides of the corridor divider)
+      2.41, 2.0,  1.57  #upper left corner of the room, open floor
+    ]
