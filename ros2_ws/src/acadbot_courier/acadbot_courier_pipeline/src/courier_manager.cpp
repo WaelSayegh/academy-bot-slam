@@ -23,6 +23,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "tf2/LinearMath/Quaternion.h"
@@ -42,29 +43,43 @@ using NavGoalHandle = rclcpp_action::ClientGoalHandle<NavigateToPose>;
 struct Pose2D { double x, y, yaw; };
 enum class Leg { Pickup, Dropoff };
 
-class CourierManager : public rclcpp::Node
+class CourierManager : public rclcpp_lifecycle::LifecycleNode
 {
 public:
+  using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
   CourierManager()
-  : Node("courier_manager")
+  : LifecycleNode("courier_manager")
+  {
+  }
+
+  CallbackReturn on_configure(const rclcpp_lifecycle::State &) override
   {
     max_retries_ = declare_parameter<int>("max_retries", 2);
     frame_id_ = declare_parameter<std::string>("frame_id", "map");
-    nav2_wait_timeout_ = declare_parameter<double>("nav2_wait_timeout", 10.0);
     leg_goal_timeout_ = declare_parameter<double>("leg_goal_timeout", 10.0);
+    // Not wired up yet — Phase 2 adds the FIFO queue that reads this.
+    max_queue_size_ = declare_parameter<int>("max_queue_size", 5);
 
     auto names = declare_parameter<std::vector<std::string>>("location_names", {});
     auto poses = declare_parameter<std::vector<double>>("location_poses", {});
 
     if (names.empty() || poses.size() != 3 * names.size()) {
-      RCLCPP_FATAL(get_logger(), "location_names/location_poses malformed.");
-      throw std::runtime_error("bad location config");
+      RCLCPP_ERROR(get_logger(), "location_names/location_poses malformed.");
+      return CallbackReturn::FAILURE;
     }
 
+    locations_.clear();
     for (size_t i = 0; i < names.size(); ++i) {
       locations_[names[i]] = Pose2D{poses[3 * i], poses[3 * i + 1], poses[3 * i + 2]};
     }
 
+    nav2_client_ = rclcpp_action::create_client<NavigateToPose>(this, "navigate_to_pose");
+    return CallbackReturn::SUCCESS;
+  }
+
+  CallbackReturn on_activate(const rclcpp_lifecycle::State &) override
+  {
     service_ = create_service<RequestDelivery>(
       "request_delivery",
       std::bind(&CourierManager::handle_request_delivery, this, _1, _2));
@@ -75,9 +90,41 @@ public:
       std::bind(&CourierManager::handle_cancel, this, _1),
       std::bind(&CourierManager::handle_accepted, this, _1));
 
-    nav2_client_ = rclcpp_action::create_client<NavigateToPose>(this, "navigate_to_pose");
-    startup_timer_ = create_wall_timer(
-      1s, std::bind(&CourierManager::check_nav2_ready, this));
+    return CallbackReturn::SUCCESS;
+  }
+
+  CallbackReturn on_deactivate(const rclcpp_lifecycle::State &) override
+  {
+    // Hard-stop: cancels whatever job is currently active. Once Phase 2
+    // adds a FIFO queue, this will also need to drain and cancel every
+    // queued job, not just the in-flight one.
+    if (current_nav_goal_handle_) {
+      nav2_client_->async_cancel_goal(current_nav_goal_handle_);
+    }
+    if (leg_timeout_timer_) {
+      leg_timeout_timer_->cancel();
+    }
+
+    service_.reset();
+    action_server_.reset();
+
+    // Bump the attempt token so any Nav2 callback still in flight from the
+    // canceled goal (goal_response/feedback/result) sees a stale token and
+    // no-ops instead of touching current_goal_handle_/current_nav_goal_handle_
+    // after they're cleared below — the same guard send_nav_goal_for_current_leg
+    // relies on, just invalidated from outside instead of from a new attempt.
+    ++attempt_token_;
+    current_goal_handle_.reset();
+    current_nav_goal_handle_.reset();
+    delivery_active_ = false;
+
+    return CallbackReturn::SUCCESS;
+  }
+
+  CallbackReturn on_cleanup(const rclcpp_lifecycle::State &) override
+  {
+    nav2_client_.reset();
+    return CallbackReturn::SUCCESS;
   }
 
 private:
@@ -113,7 +160,7 @@ private:
     std::shared_ptr<const ExecuteDelivery::Goal> goal)
   {
     (void)uuid;
-    if (!nav2_ready_ || delivery_active_) {
+    if (delivery_active_) {
       return rclcpp_action::GoalResponse::REJECT;
     }
     if (!locations_.count(goal->pickup) || !locations_.count(goal->dropoff)) {
@@ -300,38 +347,16 @@ private:
     on_leg_attempt_failed();
   }
 
-  // startup: don't accept jobs until Nav2 can actually drive
-  void check_nav2_ready()
-  {
-    if (nav2_client_->action_server_is_ready()) {
-      nav2_ready_ = true;
-      startup_timer_->cancel();
-      RCLCPP_INFO(get_logger(), "Nav2 'navigate_to_pose' action server is ready.");
-      return;
-    }
-    nav2_wait_elapsed_ += 1.0;
-    if (nav2_wait_elapsed_ >= nav2_wait_timeout_) {
-      RCLCPP_WARN(get_logger(),
-        "Still waiting for Nav2 after %.0fs — is autonomy.launch.py running?",
-        nav2_wait_elapsed_);
-    } else {
-      RCLCPP_INFO(get_logger(), "Waiting for Nav2 'navigate_to_pose' action server...");
-    }
-  }
-
   rclcpp::Service<RequestDelivery>::SharedPtr service_;
   rclcpp_action::Server<ExecuteDelivery>::SharedPtr action_server_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav2_client_;
-  rclcpp::TimerBase::SharedPtr startup_timer_;
   rclcpp::TimerBase::SharedPtr leg_timeout_timer_;
 
   std::unordered_map<std::string, Pose2D> locations_;
   std::string frame_id_;
   int max_retries_;
-  double nav2_wait_timeout_;
-  double nav2_wait_elapsed_{0.0};
   double leg_goal_timeout_;
-  bool nav2_ready_{false};
+  int max_queue_size_;
 
   bool delivery_active_{false};
   std::string active_job_id_;
@@ -349,7 +374,8 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<CourierManager>());
+  auto node = std::make_shared<CourierManager>();
+  rclcpp::spin(node->get_node_base_interface());
   rclcpp::shutdown();
   return 0;
 }

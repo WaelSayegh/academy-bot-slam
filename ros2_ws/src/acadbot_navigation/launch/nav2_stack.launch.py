@@ -72,7 +72,14 @@ def generate_launch_description():
         name='lifecycle_manager_navigation', output='screen',
         arguments=['--ros-args', '--log-level', log_level],
         parameters=[{'autostart': autostart,
-                     'node_names': [s[2] for s in SERVERS]}],
+                     # courier_manager is an rclcpp_lifecycle::LifecycleNode too, but it's
+                     # launched separately (as a plain Node(...)) by courier.launch.py, not
+                     # started from SERVERS here — only its name needs to be known to this
+                     # lifecycle manager so it gets configured/activated in sequence.
+                     # Deliberate coupling (TASKS.md Phase 1): launches that include this
+                     # file without also running courier_manager (e.g. the S4 patrol demo)
+                     # will now hang waiting for a lifecycle service that never appears.
+                     'node_names': [s[2] for s in SERVERS] + ['courier_manager']}],
     ))
 
     return LaunchDescription([

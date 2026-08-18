@@ -3,8 +3,9 @@ courier_manager:
     use_sim_time: true
     frame_id: "map"
     max_retries: 2
-    nav2_wait_timeout: 30.0
     leg_goal_timeout: 50.0
+    # Not enforced yet — Phase 2 wires up the FIFO queue that reads this.
+    max_queue_size: 5
     location_names: ["reception", "lab_bench", "workshop"]
     # x,   y,   yaw borrowed from acadbot_control/config/patrol_waypoints.yaml'
     location_poses: [

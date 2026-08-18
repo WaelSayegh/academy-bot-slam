@@ -12,6 +12,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -19,7 +20,16 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(acadbot_courier_interfaces REQUIRED)
 
 add_executable(courier_manager src/courier_manager.cpp)
-ament_target_dependencies(courier_manager rclcpp rclcpp_action geometry_msgs nav2_msgs tf2 tf2_geometry_msgs acadbot_courier_interfaces)
+ament_target_dependencies(courier_manager
+  rclcpp
+  rclcpp_action
+  rclcpp_lifecycle
+  geometry_msgs
+  nav2_msgs
+  tf2
+  tf2_geometry_msgs
+  acadbot_courier_interfaces
+)
 
 install(TARGETS courier_manager
   DESTINATION lib/${PROJECT_NAME}
