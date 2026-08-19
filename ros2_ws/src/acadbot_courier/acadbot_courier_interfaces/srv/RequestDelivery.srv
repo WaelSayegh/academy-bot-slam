@@ -1,0 +1,6 @@
+string pickup 
+string dropoff
+---
+bool accepted     # true if the job was admitted
+string job_id     # empty if rejected; pass this to ExecuteDelivery.action
+string reason     # empty if accepted; human-readable cause if rejected

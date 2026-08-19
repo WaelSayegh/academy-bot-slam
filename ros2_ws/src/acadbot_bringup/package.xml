@@ -14,6 +14,7 @@
   <exec_depend>acadbot_slam</exec_depend>
   <exec_depend>acadbot_navigation</exec_depend>
   <exec_depend>acadbot_control</exec_depend>
+  <exec_depend>acadbot_courier_pipeline</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>teleop_twist_keyboard</exec_depend>
 

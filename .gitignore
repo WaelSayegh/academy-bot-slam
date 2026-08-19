@@ -20,3 +20,10 @@ env/
 *.swp
 *~
 .DS_Store
+
+# --- generated tf tree dumps (view_frames output) ---
+ros2_ws/frames_*.gv
+ros2_ws/frames_*.pdf
+
+# --- local-only work log, never tracked/pushed ---
+LOG.md
