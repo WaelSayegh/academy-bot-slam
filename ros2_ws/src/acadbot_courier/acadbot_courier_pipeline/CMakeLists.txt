@@ -42,6 +42,7 @@ install(DIRECTORY config
 install(PROGRAMS
   scripts/courier_cli.py
   DESTINATION lib/${PROJECT_NAME}
+  RENAME courier_cli
 )
 
 if(BUILD_TESTING)
