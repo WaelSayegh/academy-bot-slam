@@ -6,7 +6,8 @@ bool success        # true only if both legs completed
 string failed_leg   # "pickup" or "dropoff"; empty on success
 string message      # human-readable result summary
 ---
-string leg                    # "to_pickup" or "to_dropoff"
+string leg                    # "to_pickup", "to_dropoff", or "queued"
 string target                 # location name currently heading to
 float32 distance_left         # meters, forwarded from Nav2's own feedback
 uint32 attempt                # 1-based retry count for the current leg
+uint32 queue_position          # 1-based position among still-waiting jobs, 0 while active

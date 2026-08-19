@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -58,7 +59,6 @@ public:
     max_retries_ = declare_parameter<int>("max_retries", 2);
     frame_id_ = declare_parameter<std::string>("frame_id", "map");
     leg_goal_timeout_ = declare_parameter<double>("leg_goal_timeout", 10.0);
-    // Not wired up yet — Phase 2 adds the FIFO queue that reads this.
     max_queue_size_ = declare_parameter<int>("max_queue_size", 5);
 
     auto names = declare_parameter<std::vector<std::string>>("location_names", {});
@@ -90,20 +90,39 @@ public:
       std::bind(&CourierManager::handle_cancel, this, _1),
       std::bind(&CourierManager::handle_accepted, this, _1));
 
+    queued_feedback_timer_ = create_wall_timer(
+      1s, std::bind(&CourierManager::publish_queued_feedback, this));
+
     return CallbackReturn::SUCCESS;
   }
 
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State &) override
   {
-    // Hard-stop: cancels whatever job is currently active. Once Phase 2
-    // adds a FIFO queue, this will also need to drain and cancel every
-    // queued job, not just the in-flight one.
+    // Hard-stop: cancels whatever job is currently active, then drains
+    // every job still waiting in queue_ (those never got a Nav2 goal, so
+    // there's nothing to cancel with Nav2 — finalize them directly).
     if (current_nav_goal_handle_) {
       nav2_client_->async_cancel_goal(current_nav_goal_handle_);
     }
     if (leg_timeout_timer_) {
       leg_timeout_timer_->cancel();
     }
+    if (queued_feedback_timer_) {
+      queued_feedback_timer_->cancel();
+    }
+
+    for (auto & queued_goal_handle : queue_) {
+      if (queued_goal_handle == current_goal_handle_) {
+        continue;
+      }
+      auto res = std::make_shared<ExecuteDelivery::Result>();
+      res->success = false;
+      res->failed_leg = "pickup";
+      res->message = "node deactivating";
+      queued_goal_handle->canceled(res);
+    }
+    queue_.clear();
+    pending_count_ = 0;
 
     service_.reset();
     action_server_.reset();
@@ -116,7 +135,6 @@ public:
     ++attempt_token_;
     current_goal_handle_.reset();
     current_nav_goal_handle_.reset();
-    delivery_active_ = false;
 
     return CallbackReturn::SUCCESS;
   }
@@ -143,15 +161,16 @@ private:
       response->reason = "unknown dropoff location: " + request->dropoff;
       return;
     }
-    if (delivery_active_) {
+    if (pending_count_ >= max_queue_size_) {
       response->accepted = false;
-      response->reason = "robot is already executing " + active_job_id_;
+      response->reason = "queue full (max " + std::to_string(max_queue_size_) + ")";
       return;
     }
 
     response->accepted = true;
     response->reason = "";
     response->job_id = "job-" + std::to_string(next_job_id_++);
+    ++pending_count_;
   }
 
   // action server: the actual drive
@@ -160,9 +179,6 @@ private:
     std::shared_ptr<const ExecuteDelivery::Goal> goal)
   {
     (void)uuid;
-    if (delivery_active_) {
-      return rclcpp_action::GoalResponse::REJECT;
-    }
     if (!locations_.count(goal->pickup) || !locations_.count(goal->dropoff)) {
       return rclcpp_action::GoalResponse::REJECT;
     }
@@ -172,17 +188,49 @@ private:
   rclcpp_action::CancelResponse handle_cancel(
     const std::shared_ptr<DeliveryGoalHandle> goal_handle)
   {
-    (void)goal_handle;
-    if (current_nav_goal_handle_) {
-      nav2_client_->async_cancel_goal(current_nav_goal_handle_);
+    if (goal_handle == current_goal_handle_) {
+      // Actively driving: forward to Nav2 and let handle_nav_result's
+      // is_canceling() branch finish it and run the queue-runner.
+      if (current_nav_goal_handle_) {
+        nav2_client_->async_cancel_goal(current_nav_goal_handle_);
+      }
+      return rclcpp_action::CancelResponse::ACCEPT;
+    }
+
+    // Not the active job — if it's still waiting in queue_, no Nav2 goal
+    // exists for it yet, so finalize it directly instead of forwarding.
+    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+      if (*it == goal_handle) {
+        queue_.erase(it);
+        if (pending_count_ > 0) {
+          --pending_count_;
+        }
+        auto res = std::make_shared<ExecuteDelivery::Result>();
+        res->success = false;
+        res->failed_leg = "pickup";
+        res->message = "canceled while queued";
+        goal_handle->canceled(res);
+        break;
+      }
     }
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
   void handle_accepted(const std::shared_ptr<DeliveryGoalHandle> goal_handle)
   {
+    queue_.push_back(goal_handle);
+    if (queue_.size() == 1) {
+      start_active_job(goal_handle);
+    }
+  }
+
+  // Promotes goal_handle to "currently active": populates the job-state
+  // members and kicks off the first leg. Used both for a freshly accepted
+  // goal that finds the queue idle, and for the new front of queue_ once
+  // the previous active job finishes.
+  void start_active_job(const std::shared_ptr<DeliveryGoalHandle> & goal_handle)
+  {
     auto goal = goal_handle->get_goal();
-    delivery_active_ = true;
     active_job_id_ = goal->job_id;
     job_pickup_ = goal->pickup;
     job_dropoff_ = goal->dropoff;
@@ -190,6 +238,48 @@ private:
     current_leg_ = Leg::Pickup;
     current_attempt_ = 1;
     send_nav_goal_for_current_leg();
+  }
+
+  // Called from the three places an active job reaches a terminal state
+  // (succeed()/canceled() in handle_nav_result, abort() in
+  // on_leg_attempt_failed) after the goal handle has already been
+  // finalized. Pops it off the queue, releases its admission-control slot,
+  // and starts the next queued job if there is one.
+  void finish_current_and_advance_queue()
+  {
+    if (!queue_.empty()) {
+      queue_.pop_front();
+    }
+    if (pending_count_ > 0) {
+      --pending_count_;
+    }
+    if (!queue_.empty()) {
+      start_active_job(queue_.front());
+    } else {
+      current_goal_handle_.reset();
+      current_nav_goal_handle_.reset();
+    }
+  }
+
+  // Manufactures "queued" feedback for every goal in queue_ except the
+  // active front, which still gets its feedback from Nav2's own callback.
+  void publish_queued_feedback()
+  {
+    uint32_t position = 0;
+    for (const auto & queued_goal_handle : queue_) {
+      if (queued_goal_handle == current_goal_handle_) {
+        continue;
+      }
+      ++position;
+      auto goal = queued_goal_handle->get_goal();
+      auto fb = std::make_shared<ExecuteDelivery::Feedback>();
+      fb->leg = "queued";
+      fb->target = goal->pickup;
+      fb->distance_left = 0.0f;
+      fb->attempt = 0;
+      fb->queue_position = position;
+      queued_goal_handle->publish_feedback(fb);
+    }
   }
 
   // vav2 client: one leg at a time
@@ -279,7 +369,7 @@ private:
       res->failed_leg = (current_leg_ == Leg::Pickup) ? "pickup" : "dropoff";
       res->message = "canceled by requester";
       current_goal_handle_->canceled(res);
-      delivery_active_ = false;
+      finish_current_and_advance_queue();
       return;
     }
 
@@ -296,7 +386,7 @@ private:
         res->failed_leg = "";
         res->message = "delivery complete";
         current_goal_handle_->succeed(res);
-        delivery_active_ = false;
+        finish_current_and_advance_queue();
       }
       return;
     }
@@ -320,7 +410,7 @@ private:
     res->message = "Nav2 exhausted recoveries after " +
       std::to_string(max_retries_ + 1) + " attempts";
     current_goal_handle_->abort(res);
-    delivery_active_ = false;
+    finish_current_and_advance_queue();
   }
 
   // Fires if a single navigate_to_pose attempt neither succeeds nor gets
@@ -351,6 +441,7 @@ private:
   rclcpp_action::Server<ExecuteDelivery>::SharedPtr action_server_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav2_client_;
   rclcpp::TimerBase::SharedPtr leg_timeout_timer_;
+  rclcpp::TimerBase::SharedPtr queued_feedback_timer_;
 
   std::unordered_map<std::string, Pose2D> locations_;
   std::string frame_id_;
@@ -358,11 +449,20 @@ private:
   double leg_goal_timeout_;
   int max_queue_size_;
 
-  bool delivery_active_{false};
+  // FIFO of every goal handle currently accepted: queue_.front() is the
+  // active job (if any), the rest are waiting their turn.
+  std::deque<std::shared_ptr<DeliveryGoalHandle>> queue_;
+  // Admission-control counter, deliberately NOT queue_.size(): it's
+  // incremented the moment RequestDelivery hands out a job_id and only
+  // decremented when that job's ExecuteDelivery goal reaches a terminal
+  // state. A job can be "pending" (id issued) before ExecuteDelivery is
+  // ever called for it, so pending_count_ can exceed queue_.size() — see
+  // the documented queue-slot-leak limitation in the task notes.
+  int pending_count_{0};
   std::string active_job_id_;
   int next_job_id_{1};
 
-  // current job state, valid only while delivery_active_ is true
+  // current job state, valid only while current_goal_handle_ is set
   std::shared_ptr<DeliveryGoalHandle> current_goal_handle_;
   NavGoalHandle::SharedPtr current_nav_goal_handle_;
   std::string job_pickup_, job_dropoff_;
