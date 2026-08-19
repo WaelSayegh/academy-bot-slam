@@ -119,7 +119,19 @@ public:
       res->success = false;
       res->failed_leg = "pickup";
       res->message = "node deactivating";
-      queued_goal_handle->canceled(res);
+      // A queued goal here was never asked to cancel, so it's unconditionally
+      // EXECUTING (see finalize_canceling_queued_goals()'s comment) unless a
+      // cancel request happened to land on it moments before deactivate --
+      // in that case it may already be CANCELING. canceled() is only valid
+      // from CANCELING and abort() is only valid from EXECUTING, so branch
+      // on the goal's actual state instead of assuming one or the other;
+      // either way the client gets a terminal success=false result, not a
+      // hang, without this loop ever throwing mid-drain.
+      if (queued_goal_handle->is_canceling()) {
+        queued_goal_handle->canceled(res);
+      } else {
+        queued_goal_handle->abort(res);
+      }
     }
     queue_.clear();
     pending_count_ = 0;
@@ -197,22 +209,16 @@ private:
       return rclcpp_action::CancelResponse::ACCEPT;
     }
 
-    // Not the active job — if it's still waiting in queue_, no Nav2 goal
-    // exists for it yet, so finalize it directly instead of forwarding.
-    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
-      if (*it == goal_handle) {
-        queue_.erase(it);
-        if (pending_count_ > 0) {
-          --pending_count_;
-        }
-        auto res = std::make_shared<ExecuteDelivery::Result>();
-        res->success = false;
-        res->failed_leg = "pickup";
-        res->message = "canceled while queued";
-        goal_handle->canceled(res);
-        break;
-      }
-    }
+    // A goal still sitting in queue_ is unconditionally EXECUTING (rclcpp_
+    // action transitions ACCEPT_AND_EXECUTE goals to EXECUTING immediately
+    // on acceptance, whether or not send_nav_goal_for_current_leg() has
+    // ever run for it) -- canceled() is only valid once the goal is
+    // CANCELING. That transition only happens via the framework's own
+    // _cancel_goal() call, which runs right after this callback returns
+    // ACCEPT, not before. So we must not finalize here: just accept, and
+    // let finalize_canceling_queued_goals() (polled from the ~1Hz
+    // publish_queued_feedback timer) notice is_canceling() and finalize it
+    // once that transition has actually happened.
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
@@ -265,6 +271,8 @@ private:
   // active front, which still gets its feedback from Nav2's own callback.
   void publish_queued_feedback()
   {
+    finalize_canceling_queued_goals();
+
     uint32_t position = 0;
     for (const auto & queued_goal_handle : queue_) {
       if (queued_goal_handle == current_goal_handle_) {
@@ -279,6 +287,33 @@ private:
       fb->attempt = 0;
       fb->queue_position = position;
       queued_goal_handle->publish_feedback(fb);
+    }
+  }
+
+  // Removes and finalizes every still-queued goal (never the active front,
+  // which is finalized by handle_nav_result's own is_canceling() branch
+  // instead) whose cancel request the framework has, since the last tick,
+  // actually transitioned to CANCELING via its own _cancel_goal() call
+  // (triggered right after handle_cancel() returns ACCEPT for it).
+  // canceled() throws unless the goal is already CANCELING, so this poll is
+  // what makes it safe to call -- see handle_cancel() for why finalizing
+  // inline there is not an option.
+  void finalize_canceling_queued_goals()
+  {
+    for (auto it = queue_.begin(); it != queue_.end(); ) {
+      if (*it == current_goal_handle_ || !(*it)->is_canceling()) {
+        ++it;
+        continue;
+      }
+      auto res = std::make_shared<ExecuteDelivery::Result>();
+      res->success = false;
+      res->failed_leg = "pickup";
+      res->message = "canceled while queued";
+      (*it)->canceled(res);
+      it = queue_.erase(it);
+      if (pending_count_ > 0) {
+        --pending_count_;
+      }
     }
   }
 
