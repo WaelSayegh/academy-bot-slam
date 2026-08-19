@@ -100,6 +100,28 @@ The C++ `patrol_commander` sends waypoint goals to Nav2; when the robot is
 blocked, Nav2's **recovery behaviors** (clear costmap → spin → back up → wait)
 kick in. Block its path with a chair in RViz's view to trigger them live.
 
+### Final project — Courier delivery pipeline
+
+```bash
+ros2 launch acadbot_bringup courier.launch.py     # sim + Nav2 + AMCL + courier_manager
+ros2 run acadbot_courier_pipeline courier_cli \
+  --pickup reception --dropoff lab_bench          # request + drive a delivery, streaming feedback
+```
+
+One C++ node, `courier_manager`, sits on top of the Session-4 autonomy stack:
+it accepts delivery jobs over the `RequestDelivery` **service** (admission
+only — instant accept/reject with a reason), then drives each accepted job as
+a cancellable `ExecuteDelivery` **action**, sending Nav2 a `navigate_to_pose`
+goal for the pickup leg and then the dropoff leg. A busy `courier_manager`
+queues new jobs FIFO (`max_queue_size` in `courier.yaml`) instead of
+rejecting them — queued jobs auto-promote as earlier ones finish. `courier_cli`
+is a purpose-built operator CLI that wraps both calls into one command and
+streams feedback (`leg`, `target`, `distance_left`, `attempt`) at ≥1 Hz;
+Ctrl+C sends a clean Nav2 cancel instead of leaving a goal orphaned.
+Locations, retry counts and per-leg timeouts are all read from
+`acadbot_courier_pipeline/config/courier.yaml`, never compiled in. See
+[`COURIER_MANAGER.md`](COURIER_MANAGER.md) for the design.
+
 ---
 
 ## Packages
@@ -113,6 +135,8 @@ kick in. Block its path with a chair in RViz's view to trigger them live.
 | `acadbot_localization` | `map_server` + AMCL on a saved map + **C++** `localization_monitor` (built as the Session-2 homework; this is the course-official version) |
 | `acadbot_navigation`  | Nav2 params (incl. recovery behaviors), maps, launch |
 | `acadbot_bringup`     | One-command launch files per session |
+| `acadbot_courier_interfaces` | `RequestDelivery` service + `ExecuteDelivery` action definitions |
+| `acadbot_courier_pipeline`   | **Final project.** `courier_manager` (**C++** lifecycle node: service admission + Nav2-driven delivery action) and `courier_cli` (operator CLI) |
 
 See [`PROJECT.md`](PROJECT.md) for the full architecture, the TF tree, the topic
 graph and the session-by-session learning outcomes.
@@ -151,7 +175,12 @@ the reference map by hand.
 ## Known-good state
 
 Everything here was run end to end on a headless container: workspace builds
-clean (6/6 packages); the drift demo produces 0.458 m and 47.7° over two laps;
+clean (9/9 packages); the drift demo produces 0.458 m and 47.7° over two laps;
 mapping saves and serializes; all eight Nav2 servers reach `active` and a
 `navigate_to_pose` goal across the divider corridor succeeds within tolerance.
+`courier_manager` reaches `active [3]` under `courier.launch.py` and all four
+required scenarios (reject, accept-and-drive, mid-drive cancel, blockage with
+retries) plus FIFO queueing (queue-full rejection, cancel-while-queued,
+auto-promotion) were verified live; `/execute_delivery` feedback streams at
+~96 Hz, well over the 1 Hz requirement.
 Full record: `Sessions/_generator/VERIFICATION.md` one level up.
