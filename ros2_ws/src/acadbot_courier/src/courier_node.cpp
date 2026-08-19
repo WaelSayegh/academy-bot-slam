@@ -5,11 +5,14 @@
 // finished deliveries, and exposes /request_delivery as the entry point for
 // booking a new job.
 // ---------------------------------------------------------------------------
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -19,19 +22,20 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "acadbot_courier_interfaces/srv/request_delivery.hpp"
 #include "acadbot_courier_interfaces/action/deliver.hpp"
+#include "nav2_msgs/action/navigate_to_pose.hpp"
 
 using namespace std::chrono_literals;
 using RequestDelivery = acadbot_courier_interfaces::srv::RequestDelivery;
 using Deliver = acadbot_courier_interfaces::action::Deliver;
 using GoalHandleDeliver = rclcpp_action::ServerGoalHandle<Deliver>;
+using NavigateToPose = nav2_msgs::action::NavigateToPose;
+using GoalHandleNav = rclcpp_action::ClientGoalHandle<NavigateToPose>;
 
 struct Pose2D { double x{0.0}, y{0.0}, yaw{0.0}; };
 
 enum class JobState { BOOKED, RUNNING, DONE, FAILED, CANCELED, EXPIRED };
 
-// Outcome of one navigate_to() round trip. The stub can only ever produce
-// SUCCEEDED or CANCELED; ABORTED, REJECTED and TIMEOUT become reachable once
-// Phase 4 replaces the stub with a real Nav2 client.
+// Outcome of one navigate_to() round trip.
 enum class NavOutcome { SUCCEEDED, ABORTED, REJECTED, CANCELED, TIMEOUT };
 
 struct Job
@@ -50,11 +54,17 @@ public:
   {
     load_locations();
 
-    booking_timeout_sec_  = declare_parameter<double>("booking_timeout_sec", 120.0);
-    max_attempts_         = declare_parameter<int>("max_attempts", 3);
-    feedback_period_sec_  = declare_parameter<double>("feedback_period_sec", 1.0);
-    stub_leg_duration_sec_ = declare_parameter<double>("stub_leg_duration_sec", 3.0);
+    booking_timeout_sec_ = declare_parameter<double>("booking_timeout_sec", 120.0);
+    max_attempts_        = declare_parameter<int>("max_attempts", 3);
+    // feedback_period_sec_ = declare_parameter<double>("feedback_period_sec", 1.0);
+    // Unused since navigate_to() relays every Nav2 feedback tick directly
+    // rather than throttling to a rate of its own.
+    leg_timeout_sec_     = declare_parameter<double>("leg_timeout_sec", 60.0);
 
+    // Booking stays MutuallyExclusive: two bookings can't run their checks
+    // against jobs_ at the same time. The action side is Reentrant so the
+    // action server's own callbacks and, once Phase 4 adds a Nav2 client,
+    // Nav2's own callbacks can all be serviced without blocking each other.
     service_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     action_group_  = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 
@@ -73,6 +83,12 @@ public:
       std::bind(&CourierNode::handle_cancel, this, std::placeholders::_1),
       std::bind(&CourierNode::handle_accepted, this, std::placeholders::_1),
       rcl_action_server_get_default_options(), action_group_);
+
+    // ---- Client of Nav2's own action, one per node not one per leg ----
+    // Same Reentrant group as the /deliver server, so Nav2's callbacks and
+    // our own action server's callbacks can both be serviced concurrently.
+    nav_client_ = rclcpp_action::create_client<NavigateToPose>(
+      this, "navigate_to_pose", action_group_);
 
     // ---- Sweep bookings nobody ever ran ----
     expiry_timer_ = create_wall_timer(
@@ -227,48 +243,187 @@ private:
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
+  // Always allow a cancel request through. This callback only decides
+  // whether cancelling is permitted at all, not whether it succeeds — the
+  // actual stopping happens inside navigate_to()/execute(), which notice
+  // is_canceling() and unwind.
   rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleDeliver>)
   {
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
+  // Goal callbacks (handle_goal, handle_cancel) must return fast, so the
+  // actual multi-minute drive can't happen here. This hands it off to a
+  // detached thread and returns immediately — the standard rclcpp_action
+  // server pattern.
   void handle_accepted(const std::shared_ptr<GoalHandleDeliver> goal_handle)
   {
     std::thread(&CourierNode::execute, this, goal_handle).detach();
   }
 
-  // Stub for one leg of the drive. Sleeps in 100ms ticks standing in for a
-  // real navigate_to_pose round trip, checking for a cancel and publishing
-  // feedback each tick. Phase 4 replaces the body of this function with a
-  // real Nav2 action client; execute() below does not change.
+  // Renders "[####------] NN%" from a fraction in [0, 1] so a human reading
+  // feedback in a terminal can see progress rather than just a bare number.
+  static std::string render_progress_bar(float fraction)
+  {
+    fraction = std::clamp(fraction, 0.0f, 1.0f);
+    const int width = 20;
+    const int filled = static_cast<int>(fraction * width);
+    return "[" + std::string(filled, '#') + std::string(width - filled, '-') +
+           "] " + std::to_string(static_cast<int>(fraction * 100)) + "%";
+  }
+
+  // State one navigate_to() call shares with Nav2's async callbacks, which
+  // run on the node's executor threads rather than the detached execute()
+  // thread navigate_to() itself runs on. Owned by a shared_ptr rather than
+  // living on navigate_to()'s stack, since the timeout path below returns
+  // without waiting for Nav2 to confirm a cancel — a callback can still fire
+  // after that return, and needs somewhere valid to write into. Scoped to a
+  // single call rather than kept as node members, so a late callback from an
+  // abandoned goal can never bleed into a later delivery's in-flight state.
+  struct NavCallState
+  {
+    std::mutex mutex;
+    bool finished{false};
+    bool goal_response_received{false};
+    GoalHandleNav::SharedPtr nav_goal_handle;
+    bool result_ready{false};
+    rclcpp_action::ResultCode result_code{rclcpp_action::ResultCode::UNKNOWN};
+    std::optional<float> first_distance;
+  };
+
+  // Drives one leg via Nav2's navigate_to_pose action and reports how it
+  // went. Sends the goal, then polls with wait-and-check rather than any
+  // blocking wait — the node's own MultiThreadedExecutor is what actually
+  // services Nav2's callbacks, on threads this function does not own, so
+  // blocking here would only stall the wait without helping it resolve.
   NavOutcome navigate_to(
     const std::shared_ptr<GoalHandleDeliver> & goal_handle,
     const std::string & job_id, const std::string & leg, const std::string & target,
     int attempt, int max_attempts)
   {
-    const auto tick = 100ms;
-    const int total_ticks = std::max(1, static_cast<int>(stub_leg_duration_sec_ * 1000 / 100));
-    const int feedback_every = std::max(1, static_cast<int>(feedback_period_sec_ * 1000 / 100));
-    float distance = 5.0f;
+    const Pose2D pose = locations_.at(target);
 
-    for (int i = 0; i < total_ticks; ++i) {
-      if (goal_handle->is_canceling()) {
-        return NavOutcome::CANCELED;
-      }
-      if (i % feedback_every == 0) {
+    NavigateToPose::Goal nav_goal;
+    nav_goal.pose.header.frame_id = "map";
+    nav_goal.pose.header.stamp = now();
+    nav_goal.pose.pose.position.x = pose.x;
+    nav_goal.pose.pose.position.y = pose.y;
+    nav_goal.pose.pose.orientation.z = std::sin(pose.yaw / 2.0);
+    nav_goal.pose.pose.orientation.w = std::cos(pose.yaw / 2.0);
+
+    auto state = std::make_shared<NavCallState>();
+
+    rclcpp_action::Client<NavigateToPose>::SendGoalOptions opts;
+    opts.goal_response_callback =
+      [state](GoalHandleNav::SharedPtr nav_goal_handle) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->finished) return;
+        state->goal_response_received = true;
+        state->nav_goal_handle = nav_goal_handle;
+      };
+    opts.feedback_callback =
+      [this, state, goal_handle, job_id, leg, target, attempt, max_attempts](
+        GoalHandleNav::SharedPtr, const std::shared_ptr<const NavigateToPose::Feedback> nav_feedback) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->finished) return;
+        if (!state->first_distance.has_value()) {
+          state->first_distance = nav_feedback->distance_remaining;
+        }
+        const float total = *state->first_distance;
+        const float fraction = total > 0.0f ? (1.0f - nav_feedback->distance_remaining / total) : 1.0f;
+
         auto feedback = std::make_shared<Deliver::Feedback>();
         feedback->job_id = job_id;
         feedback->leg = leg;
         feedback->target_location = target;
-        feedback->distance_remaining = distance;
+        feedback->distance_remaining = nav_feedback->distance_remaining;
+        feedback->progress_bar = render_progress_bar(fraction);
         feedback->attempt = attempt;
         feedback->max_attempts = max_attempts;
         goal_handle->publish_feedback(feedback);
-        distance = std::max(0.0f, distance - 1.0f);
+      };
+    opts.result_callback =
+      [state](const GoalHandleNav::WrappedResult & result) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->finished) return;
+        state->result_ready = true;
+        state->result_code = result.code;
+      };
+
+    nav_client_->async_send_goal(nav_goal, opts);
+
+    const auto deadline = now() + rclcpp::Duration::from_seconds(leg_timeout_sec_);
+    while (rclcpp::ok()) {
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->goal_response_received && !state->nav_goal_handle) {
+          state->finished = true;
+          RCLCPP_WARN(get_logger(), "Nav2 rejected the goal to '%s'", target.c_str());
+          return NavOutcome::REJECTED;
+        }
+        if (state->result_ready) {
+          state->finished = true;
+          switch (state->result_code) {
+            case rclcpp_action::ResultCode::SUCCEEDED: return NavOutcome::SUCCEEDED;
+            case rclcpp_action::ResultCode::CANCELED:  return NavOutcome::CANCELED;
+            default:
+              RCLCPP_WARN(get_logger(), "Nav2 aborted en route to '%s'", target.c_str());
+              return NavOutcome::ABORTED;
+          }
+        }
       }
-      std::this_thread::sleep_for(tick);
+
+      if (goal_handle->is_canceling()) {
+        // The requester asked to stop and Nav2 is presumably still
+        // responsive, so this waits (bounded by the same leg deadline) for
+        // Nav2 to actually confirm the goal stopped, unlike the timeout
+        // path below.
+        bool cancel_sent = false;
+        while (rclcpp::ok() && now() < deadline) {
+          GoalHandleNav::SharedPtr nav_goal_handle;
+          bool done;
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            nav_goal_handle = state->nav_goal_handle;
+            done = state->result_ready;
+          }
+          if (done) break;
+          if (!cancel_sent && nav_goal_handle) {
+            nav_client_->async_cancel_goal(nav_goal_handle);
+            cancel_sent = true;
+          }
+          std::this_thread::sleep_for(100ms);
+        }
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->finished = true;
+        return NavOutcome::CANCELED;
+      }
+
+      if (now() > deadline) {
+        // Nav2 hasn't answered in time. Cancel as cleanup, but don't wait
+        // for confirmation: a goal already this unresponsive might never
+        // confirm, and waiting here would defeat the point of timing out.
+        GoalHandleNav::SharedPtr nav_goal_handle;
+        {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          nav_goal_handle = state->nav_goal_handle;
+        }
+        if (nav_goal_handle) {
+          nav_client_->async_cancel_goal(nav_goal_handle);
+        }
+        RCLCPP_WARN(get_logger(), "Nav2 did not answer within %.0fs for '%s'",
+                    leg_timeout_sec_, target.c_str());
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->finished = true;
+        return NavOutcome::TIMEOUT;
+      }
+
+      std::this_thread::sleep_for(100ms);
     }
-    return NavOutcome::SUCCEEDED;
+
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->finished = true;
+    return NavOutcome::ABORTED;
   }
 
   // Moves the job to its terminal state and ends the action accordingly.
@@ -346,13 +501,14 @@ private:
   int next_job_number_{1};
   double booking_timeout_sec_;
   int max_attempts_;
-  double feedback_period_sec_;
-  double stub_leg_duration_sec_;
+  // double feedback_period_sec_;
+  double leg_timeout_sec_;
 
   rclcpp::CallbackGroup::SharedPtr service_group_;
   rclcpp::CallbackGroup::SharedPtr action_group_;
   rclcpp::Service<RequestDelivery>::SharedPtr service_;
   rclcpp_action::Server<Deliver>::SharedPtr action_server_;
+  rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
   rclcpp::TimerBase::SharedPtr expiry_timer_;
 };
 
@@ -360,6 +516,10 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<CourierNode>();
+  // A plain rclcpp::spin() only ever uses one thread. That's fine while
+  // execute() runs on its own detached thread, but Phase 4's Nav2 client
+  // callbacks and the booking service both need to be serviced *while*
+  // execute() is mid-drive, so this needs real worker threads behind it.
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   executor.spin();
