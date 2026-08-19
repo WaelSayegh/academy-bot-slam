@@ -20,3 +20,6 @@ env/
 *.swp
 *~
 .DS_Store
+
+# --- local-only work log, never tracked/pushed ---
+LOG.md
