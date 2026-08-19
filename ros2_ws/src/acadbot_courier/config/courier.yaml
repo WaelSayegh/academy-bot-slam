@@ -12,3 +12,6 @@ courier_node:
       charging_dock: {x: 0.6, y: 0.6, yaw:  0.00}
 
     booking_timeout_sec: 120.0   # booked-but-never-run jobs expire
+    max_attempts: 3              # tries per leg before the job fails (Phase 5)
+    feedback_period_sec: 1.0     # must stay <= 1.0
+    stub_leg_duration_sec: 3.0   # Phase 3 only, removed once Nav2 is real

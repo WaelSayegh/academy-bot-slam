@@ -10,10 +10,11 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(acadbot_courier_interfaces REQUIRED)
 
 add_executable(courier_node src/courier_node.cpp)
-ament_target_dependencies(courier_node rclcpp acadbot_courier_interfaces)
+ament_target_dependencies(courier_node rclcpp rclcpp_action acadbot_courier_interfaces)
 
 install(TARGETS
   courier_node
