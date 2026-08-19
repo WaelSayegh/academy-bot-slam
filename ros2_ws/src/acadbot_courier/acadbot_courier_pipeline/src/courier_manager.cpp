@@ -1,3 +1,17 @@
+// Copyright 2026 Hiba Tarabay
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -31,7 +45,8 @@ enum class Leg { Pickup, Dropoff };
 class CourierManager : public rclcpp::Node
 {
 public:
-  CourierManager() : Node("courier_manager")
+  CourierManager()
+  : Node("courier_manager")
   {
     max_retries_ = declare_parameter<int>("max_retries", 2);
     frame_id_ = declare_parameter<std::string>("frame_id", "map");
@@ -66,7 +81,7 @@ public:
   }
 
 private:
-  // service: admission control only, never drives 
+  // service: admission control only, never drives
   void handle_request_delivery(
     const std::shared_ptr<RequestDelivery::Request> request,
     std::shared_ptr<RequestDelivery::Response> response)
@@ -165,7 +180,7 @@ private:
     const uint64_t token = ++attempt_token_;
     leg_timeout_timer_ = create_wall_timer(
       std::chrono::duration<double>(leg_goal_timeout_),
-      [this, token]() { on_leg_timeout(token); });
+      [this, token]() {on_leg_timeout(token);});
 
     rclcpp_action::Client<NavigateToPose>::SendGoalOptions opts;
     opts.goal_response_callback =
@@ -181,7 +196,7 @@ private:
       };
     opts.feedback_callback =
       [this, token](NavGoalHandle::SharedPtr,
-             const std::shared_ptr<const NavigateToPose::Feedback> fb) {
+      const std::shared_ptr<const NavigateToPose::Feedback> fb) {
         if (token != attempt_token_) {
           return;
         }
@@ -210,7 +225,7 @@ private:
       leg_timeout_timer_->cancel();
     }
 
-    // cancel takes priority over whatever Nav2's result code says 
+    // cancel takes priority over whatever Nav2's result code says
     if (current_goal_handle_->is_canceling()) {
       auto res = std::make_shared<ExecuteDelivery::Result>();
       res->success = false;
@@ -296,8 +311,9 @@ private:
     }
     nav2_wait_elapsed_ += 1.0;
     if (nav2_wait_elapsed_ >= nav2_wait_timeout_) {
-      RCLCPP_WARN(get_logger(), "Still waiting for Nav2 after %.0fs — is autonomy.launch.py running?",
-                  nav2_wait_elapsed_);
+      RCLCPP_WARN(get_logger(),
+        "Still waiting for Nav2 after %.0fs — is autonomy.launch.py running?",
+        nav2_wait_elapsed_);
     } else {
       RCLCPP_INFO(get_logger(), "Waiting for Nav2 'navigate_to_pose' action server...");
     }
