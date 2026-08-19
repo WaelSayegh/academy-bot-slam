@@ -259,6 +259,19 @@ private:
     if (pending_count_ > 0) {
       --pending_count_;
     }
+    // The new front may already be CANCELING: its client canceled it while
+    // it was still queued (handle_cancel() ACCEPTed and the framework's own
+    // _cancel_goal() ran), but the ~1Hz finalize_canceling_queued_goals()
+    // tick hasn't caught up to it yet -- this terminal transition can
+    // happen at any point in between two ticks, including right here.
+    // Promoting a canceling goal to active would send it a real Nav2 goal
+    // for a job the client already tried to cancel, contradicting "there's
+    // nothing to forward to Nav2" for queued cancels. Finalize any such
+    // fronts first so only a goal that's actually still executing (and not
+    // canceling) ever gets promoted.
+    while (!queue_.empty() && queue_.front()->is_canceling()) {
+      finalize_one_canceling_queued_goal(queue_.begin());
+    }
     if (!queue_.empty()) {
       start_active_job(queue_.front());
     } else {
@@ -305,16 +318,34 @@ private:
         ++it;
         continue;
       }
-      auto res = std::make_shared<ExecuteDelivery::Result>();
-      res->success = false;
-      res->failed_leg = "pickup";
-      res->message = "canceled while queued";
-      (*it)->canceled(res);
-      it = queue_.erase(it);
-      if (pending_count_ > 0) {
-        --pending_count_;
-      }
+      it = finalize_one_canceling_queued_goal(it);
     }
+  }
+
+  // Finalizes the single already-CANCELING queued goal at `it` as
+  // "canceled while queued" (success=false), erases it from queue_, and
+  // releases its admission-control slot. Shared by
+  // finalize_canceling_queued_goals() (the periodic sweep) and
+  // finish_current_and_advance_queue() (the promotion-time check) so this
+  // finalization body exists exactly once. `it` must be dereferenceable and
+  // must already satisfy is_canceling() -- callers are responsible for that
+  // check, since the two call sites have different criteria for which
+  // entries qualify (all of queue_ except the active front, vs. specifically
+  // the new front about to be promoted).
+  std::deque<std::shared_ptr<DeliveryGoalHandle>>::iterator
+  finalize_one_canceling_queued_goal(
+    std::deque<std::shared_ptr<DeliveryGoalHandle>>::iterator it)
+  {
+    auto res = std::make_shared<ExecuteDelivery::Result>();
+    res->success = false;
+    res->failed_leg = "pickup";
+    res->message = "canceled while queued";
+    (*it)->canceled(res);
+    auto next = queue_.erase(it);
+    if (pending_count_ > 0) {
+      --pending_count_;
+    }
+    return next;
   }
 
   // vav2 client: one leg at a time
