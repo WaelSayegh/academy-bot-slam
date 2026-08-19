@@ -5,14 +5,12 @@
 // finished deliveries, and exposes /request_delivery as the entry point for
 // booking a new job.
 // ---------------------------------------------------------------------------
-#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
 #include <map>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -37,6 +35,10 @@ enum class JobState { BOOKED, RUNNING, DONE, FAILED, CANCELED, EXPIRED };
 
 // Outcome of one navigate_to() round trip.
 enum class NavOutcome { SUCCEEDED, ABORTED, REJECTED, CANCELED, TIMEOUT };
+
+// navigate_to()'s full answer: what happened, and, for a failure, why —
+// carrying Nav2's own error_msg forward rather than just a bare enum value.
+struct NavResult { NavOutcome outcome; std::string detail; };
 
 struct Job
 {
@@ -261,17 +263,6 @@ private:
     std::thread(&CourierNode::execute, this, goal_handle).detach();
   }
 
-  // Renders "[####------] NN%" from a fraction in [0, 1] so a human reading
-  // feedback in a terminal can see progress rather than just a bare number.
-  static std::string render_progress_bar(float fraction)
-  {
-    fraction = std::clamp(fraction, 0.0f, 1.0f);
-    const int width = 20;
-    const int filled = static_cast<int>(fraction * width);
-    return "[" + std::string(filled, '#') + std::string(width - filled, '-') +
-           "] " + std::to_string(static_cast<int>(fraction * 100)) + "%";
-  }
-
   // State one navigate_to() call shares with Nav2's async callbacks, which
   // run on the node's executor threads rather than the detached execute()
   // thread navigate_to() itself runs on. Owned by a shared_ptr rather than
@@ -288,7 +279,7 @@ private:
     GoalHandleNav::SharedPtr nav_goal_handle;
     bool result_ready{false};
     rclcpp_action::ResultCode result_code{rclcpp_action::ResultCode::UNKNOWN};
-    std::optional<float> first_distance;
+    std::string error_msg;
   };
 
   // Drives one leg via Nav2's navigate_to_pose action and reports how it
@@ -296,7 +287,7 @@ private:
   // blocking wait — the node's own MultiThreadedExecutor is what actually
   // services Nav2's callbacks, on threads this function does not own, so
   // blocking here would only stall the wait without helping it resolve.
-  NavOutcome navigate_to(
+  NavResult navigate_to(
     const std::shared_ptr<GoalHandleDeliver> & goal_handle,
     const std::string & job_id, const std::string & leg, const std::string & target,
     int attempt, int max_attempts)
@@ -326,18 +317,12 @@ private:
         GoalHandleNav::SharedPtr, const std::shared_ptr<const NavigateToPose::Feedback> nav_feedback) {
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->finished) return;
-        if (!state->first_distance.has_value()) {
-          state->first_distance = nav_feedback->distance_remaining;
-        }
-        const float total = *state->first_distance;
-        const float fraction = total > 0.0f ? (1.0f - nav_feedback->distance_remaining / total) : 1.0f;
 
         auto feedback = std::make_shared<Deliver::Feedback>();
         feedback->job_id = job_id;
         feedback->leg = leg;
         feedback->target_location = target;
         feedback->distance_remaining = nav_feedback->distance_remaining;
-        feedback->progress_bar = render_progress_bar(fraction);
         feedback->attempt = attempt;
         feedback->max_attempts = max_attempts;
         goal_handle->publish_feedback(feedback);
@@ -348,6 +333,7 @@ private:
         if (state->finished) return;
         state->result_ready = true;
         state->result_code = result.code;
+        state->error_msg = result.result ? result.result->error_msg : "";
       };
 
     nav_client_->async_send_goal(nav_goal, opts);
@@ -359,16 +345,19 @@ private:
         if (state->goal_response_received && !state->nav_goal_handle) {
           state->finished = true;
           RCLCPP_WARN(get_logger(), "Nav2 rejected the goal to '%s'", target.c_str());
-          return NavOutcome::REJECTED;
+          return NavResult{NavOutcome::REJECTED, "Nav2 rejected the goal"};
         }
         if (state->result_ready) {
           state->finished = true;
           switch (state->result_code) {
-            case rclcpp_action::ResultCode::SUCCEEDED: return NavOutcome::SUCCEEDED;
-            case rclcpp_action::ResultCode::CANCELED:  return NavOutcome::CANCELED;
+            case rclcpp_action::ResultCode::SUCCEEDED:
+              return NavResult{NavOutcome::SUCCEEDED, ""};
+            case rclcpp_action::ResultCode::CANCELED:
+              return NavResult{NavOutcome::CANCELED, ""};
             default:
-              RCLCPP_WARN(get_logger(), "Nav2 aborted en route to '%s'", target.c_str());
-              return NavOutcome::ABORTED;
+              RCLCPP_WARN(get_logger(), "Nav2 aborted en route to '%s': %s",
+                          target.c_str(), state->error_msg.c_str());
+              return NavResult{NavOutcome::ABORTED, state->error_msg};
           }
         }
       }
@@ -396,7 +385,7 @@ private:
         }
         std::lock_guard<std::mutex> lock(state->mutex);
         state->finished = true;
-        return NavOutcome::CANCELED;
+        return NavResult{NavOutcome::CANCELED, ""};
       }
 
       if (now() > deadline) {
@@ -415,7 +404,9 @@ private:
                     leg_timeout_sec_, target.c_str());
         std::lock_guard<std::mutex> lock(state->mutex);
         state->finished = true;
-        return NavOutcome::TIMEOUT;
+        return NavResult{NavOutcome::TIMEOUT,
+                          "Nav2 did not respond within " +
+                            std::to_string(static_cast<int>(leg_timeout_sec_)) + "s"};
       }
 
       std::this_thread::sleep_for(100ms);
@@ -423,7 +414,29 @@ private:
 
     std::lock_guard<std::mutex> lock(state->mutex);
     state->finished = true;
-    return NavOutcome::ABORTED;
+    return NavResult{NavOutcome::ABORTED, "node is shutting down"};
+  }
+
+  // Drives one leg, retrying on ABORTED/TIMEOUT up to max_attempts_.
+  // REJECTED and CANCELED are not retried: a pose Nav2 refused outright
+  // won't become valid by asking again, and a cancel means the requester
+  // wants to stop, not that the robot should try harder.
+  NavResult drive_leg_with_retries(
+    const std::shared_ptr<GoalHandleDeliver> & goal_handle,
+    const std::string & job_id, const std::string & leg, const std::string & target)
+  {
+    NavResult result;
+    for (int attempt = 1; attempt <= max_attempts_; ++attempt) {
+      result = navigate_to(goal_handle, job_id, leg, target, attempt, max_attempts_);
+      if (result.outcome == NavOutcome::SUCCEEDED ||
+          result.outcome == NavOutcome::CANCELED ||
+          result.outcome == NavOutcome::REJECTED)
+      {
+        return result;
+      }
+      // ABORTED or TIMEOUT: worth trying again unless attempts are exhausted.
+    }
+    return result;
   }
 
   // Moves the job to its terminal state and ends the action accordingly.
@@ -453,9 +466,10 @@ private:
     RCLCPP_INFO(get_logger(), "%s finished: %s", job_id.c_str(), message.c_str());
   }
 
-  // Drives the pickup leg, then the dropoff leg. No retry loop yet — that is
-  // Phase 5 — so any non-SUCCEEDED, non-CANCELED outcome ends the job as
-  // FAILED immediately.
+  // Drives the pickup leg, then the dropoff leg, retrying each one through
+  // drive_leg_with_retries(). A CANCELED outcome always means the requester
+  // asked to stop; anything else short of SUCCEEDED, after retries are
+  // exhausted, means the job genuinely failed.
   void execute(const std::shared_ptr<GoalHandleDeliver> goal_handle)
   {
     const std::string job_id = goal_handle->get_goal()->job_id;
@@ -466,29 +480,33 @@ private:
       dropoff = jobs_[job_id].dropoff;
     }
 
-    auto outcome = navigate_to(goal_handle, job_id, Deliver::Feedback::LEG_PICKUP,
-                                pickup, 1, max_attempts_);
-    if (outcome == NavOutcome::CANCELED) {
+    auto failure_message = [](const std::string & leg, const std::string & detail) {
+      std::string message = "navigation to " + leg + " failed";
+      if (!detail.empty()) message += ": " + detail;
+      return message;
+    };
+
+    auto result = drive_leg_with_retries(goal_handle, job_id, Deliver::Feedback::LEG_PICKUP, pickup);
+    if (result.outcome == NavOutcome::CANCELED) {
       finish(goal_handle, job_id, JobState::CANCELED, false, "",
              "cancelled during pickup leg");
       return;
     }
-    if (outcome != NavOutcome::SUCCEEDED) {
+    if (result.outcome != NavOutcome::SUCCEEDED) {
       finish(goal_handle, job_id, JobState::FAILED, false, "pickup",
-             "navigation to pickup failed");
+             failure_message("pickup", result.detail));
       return;
     }
 
-    outcome = navigate_to(goal_handle, job_id, Deliver::Feedback::LEG_DROPOFF,
-                           dropoff, 1, max_attempts_);
-    if (outcome == NavOutcome::CANCELED) {
+    result = drive_leg_with_retries(goal_handle, job_id, Deliver::Feedback::LEG_DROPOFF, dropoff);
+    if (result.outcome == NavOutcome::CANCELED) {
       finish(goal_handle, job_id, JobState::CANCELED, false, "",
              "cancelled during dropoff leg");
       return;
     }
-    if (outcome != NavOutcome::SUCCEEDED) {
+    if (result.outcome != NavOutcome::SUCCEEDED) {
       finish(goal_handle, job_id, JobState::FAILED, false, "dropoff",
-             "navigation to dropoff failed");
+             failure_message("dropoff", result.detail));
       return;
     }
 

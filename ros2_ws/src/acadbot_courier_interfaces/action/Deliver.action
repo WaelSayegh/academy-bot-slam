@@ -17,6 +17,5 @@ string  job_id
 string  leg                     # LEG_PICKUP or LEG_DROPOFF
 string  target_location         # "reception"
 float32 distance_remaining      # metres, relayed from Nav2
-string  progress_bar            # e.g. "[##########----------] 50%", for a human watching the terminal
 int32   attempt                 # 1, 2, 3...
 int32   max_attempts
