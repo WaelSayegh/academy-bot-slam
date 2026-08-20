@@ -1,0 +1,9 @@
+# Book a delivery between two named locations; the driving happens afterwards
+# through ExecuteDelivery.
+
+string pickup       # named location, must exist in the courier's table
+string dropoff      # named location, must exist and differ from pickup
+---
+bool   accepted
+string job_id       # send this to ExecuteDelivery; empty if rejected
+string reason       # why it was rejected, in words; empty if accepted

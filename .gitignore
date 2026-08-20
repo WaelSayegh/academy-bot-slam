@@ -9,6 +9,36 @@ ros2_ws/src/acadbot_navigation/maps/*.yaml
 ros2_ws/src/acadbot_navigation/maps/*.posegraph
 ros2_ws/src/acadbot_navigation/maps/*.data
 
+# --- maps saved from the workspace root by mistake ---
+#     map_saver_cli writes to the current directory, so a save run from
+#     /ros2_ws lands here instead of in acadbot_navigation/maps/.
+ros2_ws/*.pgm
+ros2_ws/*.yaml
+ros2_ws/*.posegraph
+ros2_ws/*.data
+
+# --- tf2_tools view_frames dumps (written to the current directory) ---
+frames_*.gv
+frames_*.pdf
+
+# --- reference docs from another project, kept only as a style guide ---
+docs/samples/
+
+# --- local coursework: briefs, past homework, evidence screenshots ---
+#     Not part of any code deliverable; kept out so a PR diff contains only
+#     the change it is meant to contain.
+FINAL_PROJECT.md
+HW/
+screenshots/
+
+# --- working notes written at the repo root while building the courier ---
+#     Superseded by docs/ and by acadbot_courier/README.md, which are the
+#     versions meant to be read. Kept locally rather than deleted.
+COURIER_BEHAVIOR_TREE.md
+COURIER_FSM.md
+COURIER_STATE_MACHINE.md
+FINAL_PROJECT_REVIEW.md
+
 # --- python / venv (slide generator etc.) ---
 __pycache__/
 *.pyc
@@ -20,3 +50,4 @@ env/
 *.swp
 *~
 .DS_Store
+.vscode/

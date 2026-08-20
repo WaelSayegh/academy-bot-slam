@@ -1,0 +1,29 @@
+# Everything the courier knows about the building and its own limits.
+
+# Coordinates are in the MAP frame, not Gazebo's: map = gazebo + (3, 2).
+
+# Keyed /** so courier_server and courier_bt_server read one block and cannot
+# drift apart.
+/**:
+  ros__parameters:
+    use_sim_time: true
+
+    goal_frame: "map"
+
+    # Counted per leg, so each of pickup and dropoff gets this many retries.
+    max_retries: 4
+    retry_delay: 3.0        # s, between attempts on the same leg
+    feedback_period: 0.5    # s; the action promises feedback at least once a second
+    leg_timeout: 120.0      # s, before an attempt is abandoned and retried
+
+    # x, y, yaw -- read them off RViz's Publish Point, and keep each one at
+    # least inflation_radius (0.45 m) clear of any wall.
+
+    # lab_bench and charging_dock were both moved after measuring: the
+    # originals sat inside the inflation band and aborted or cost recoveries.
+    locations:
+      reception:     [0.60, 4.20,  0.00]
+      lab_bench:     [4.50, 4.20,  3.14]
+      storage:       [5.50, 0.60,  0.00]
+      charging_dock: [0.50, 2.00, -1.57]
+

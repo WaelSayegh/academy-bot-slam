@@ -1,0 +1,23 @@
+# Run a delivery already booked through RequestDelivery.
+
+# Only the id: the poses were resolved and frozen when the job was booked.
+string job_id
+---
+# success is false for every outcome that is not "both legs reached".
+bool   success
+string job_id
+string message           # human-readable outcome
+string failed_leg        # "pickup" or "dropoff"; empty on success
+uint8  attempts_used     # navigate_to_pose goals sent across both legs
+---
+# Published on the courier's own timer, so a stalled Nav2 shows as a frozen
+# distance rather than as silence.
+uint8 LEG_PICKUP  = 0
+uint8 LEG_DROPOFF = 1
+
+uint8   leg                  # LEG_PICKUP or LEG_DROPOFF
+string  target_location      # the name it is driving to
+float32 distance_remaining   # metres, as reported by Nav2
+uint8   attempt              # 1-based, on the current leg
+uint16  nav2_recoveries      # recoveries Nav2 has run on this leg
+string  state                # NAVIGATING / RETRYING / CANCELING

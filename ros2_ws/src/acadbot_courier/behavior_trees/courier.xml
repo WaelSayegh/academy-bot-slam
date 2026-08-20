@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!-- The delivery mission: two legs, each retried with a timeout and a pause.
+     GoToLocation is ours; every other node is a BehaviorTree.CPP built-in. -->
+<root BTCPP_format="4" main_tree_to_execute="CourierDelivery">
+
+  <BehaviorTree ID="CourierDelivery">
+    <Sequence name="delivery">
+
+      <!-- Sequence is what makes this a delivery: fail the pickup and the
+           dropoff is never attempted. -->
+      <RetryUntilSuccessful num_attempts="{max_attempts}" name="pickup_attempts">
+        <Fallback>
+          <Timeout msec="{leg_timeout_msec}">
+            <GoToLocation pose="{pickup_pose}" location_name="{pickup_name}" leg="pickup"/>
+          </Timeout>
+
+          <!-- The pause belongs here, not around the attempt: wrapping
+               GoToLocation would delay the first try too. -->
+          <Delay delay_msec="{retry_delay_msec}">
+            <AlwaysFailure/>
+          </Delay>
+        </Fallback>
+      </RetryUntilSuccessful>
+
+      <!-- Leg 2, identical but for the target. -->
+      <RetryUntilSuccessful num_attempts="{max_attempts}" name="dropoff_attempts">
+        <Fallback>
+          <Timeout msec="{leg_timeout_msec}">
+            <GoToLocation pose="{dropoff_pose}" location_name="{dropoff_name}" leg="dropoff"/>
+          </Timeout>
+          <Delay delay_msec="{retry_delay_msec}">
+            <AlwaysFailure/>
+          </Delay>
+        </Fallback>
+      </RetryUntilSuccessful>
+
+    </Sequence>
+  </BehaviorTree>
+
+</root>

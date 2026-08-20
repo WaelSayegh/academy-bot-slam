@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>acadbot_courier_msgs</name>
+  <version>0.1.0</version>
+  <description>Service and action interfaces for the AcadBot courier: book a
+  delivery between two named locations, then run it.</description>
+  <maintainer email="eliasantoun07@outlook.com">Elias Antoun</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <!-- Every package that generates an action needs action_msgs: the generated
+       goal-handling services are built on its GoalInfo / GoalStatus types. -->
+  <depend>action_msgs</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export><build_type>ament_cmake</build_type></export>
+</package>
