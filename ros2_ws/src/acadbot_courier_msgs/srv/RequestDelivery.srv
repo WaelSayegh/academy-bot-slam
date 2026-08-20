@@ -1,0 +1,8 @@
+# Request: name a pickup and a dropoff by name, never by coordinates.
+string pickup
+string dropoff
+---
+# Response: returns immediately. Never blocks on navigation.
+bool accepted
+string job_id      # empty when accepted is false
+string reason      # human-readable; explains a rejection, or confirms acceptance

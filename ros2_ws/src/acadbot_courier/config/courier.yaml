@@ -1,0 +1,26 @@
+courier_node:
+  ros__parameters:
+    # Attempts includes the first try: 3 means one try plus two retries.
+    max_attempts_per_leg: 3
+    retry_backoff_sec: 2.0
+    clear_costmap_before_retry: true
+
+    leg_timeout_sec: 120.0
+    feedback_period_sec: 1.0
+    job_ttl_sec: 60.0
+    nav_goal_response_timeout_sec: 5.0
+    nav_cancel_confirm_timeout_sec: 5.0
+    costmap_service_timeout_sec: 2.0
+
+    dwell:
+      pickup: 3.0
+      dropoff: 3.0
+
+    max_concurrent_jobs: 1
+    queue_depth: 0
+
+    nav_action_name: "navigate_to_pose"
+    global_frame: "map"
+    robot_base_frame: "base_link"
+    global_costmap_clear_service: "/global_costmap/clear_entirely_global_costmap"
+    local_costmap_clear_service: "/local_costmap/clear_entirely_local_costmap"

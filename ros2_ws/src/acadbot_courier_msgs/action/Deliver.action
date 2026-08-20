@@ -1,0 +1,18 @@
+# Goal: the id issued by RequestDelivery.
+string job_id
+---
+# Result
+bool   success        # true ONLY if both legs reached their pose
+string outcome        # SUCCEEDED | CANCELED | NAV_ABORTED | TIMEOUT | INVALID_JOB
+string failed_leg     # "" on success; otherwise "pickup" or "dropoff"
+uint16 attempts_used  # total Nav2 goals sent across the whole job
+string message        # human-readable summary
+---
+# Feedback: published at >= 1 Hz for the entire life of the goal.
+string  job_id
+string  leg               # "pickup" | "dropoff"
+string  target_location   # the named location this leg is heading to
+float32 distance_remaining # metres; -1.0 when not yet known
+uint16  attempt           # 1-based attempt number for the current leg
+string  state             # NAVIGATING | RETRYING | RECOVERING | DWELLING
+float32 elapsed_sec       # since goal acceptance

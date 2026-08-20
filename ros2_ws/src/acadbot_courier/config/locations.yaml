@@ -1,0 +1,41 @@
+courier_node:
+  ros__parameters:
+    # These map-frame poses reuse the academy map's documented patrol waypoints.
+    # Verify them in simulation before the demo if the map or spawn pose changes.
+    location_names: ["reception", "lab_bench", "charging_dock", "corridor_a"]
+    locations:
+      reception:
+        x: 0.6
+        y: 4.2
+        yaw: 0.0
+      lab_bench:
+        x: 2.4
+        y: 4.2
+        yaw: -1.57
+      charging_dock:
+        x: 5.5
+        y: 0.6
+        yaw: 0.0
+      corridor_a:
+        x: 6.2
+        y: 4.2
+        yaw: 3.14
+
+    initial_pose:
+      x: 0.6
+      y: 4.2
+      yaw: 0.0
+
+# ROS 2 parameter files target nodes by name. The startup helper therefore has
+# its own section. Keep these three pose values equal to the initial_pose above.
+initial_pose_publisher:
+  ros__parameters:
+    initial_pose:
+      x: 0.6
+      y: 4.2
+      yaw: 0.0
+      covariance_x: 0.25
+      covariance_y: 0.25
+      covariance_yaw: 0.068
+    global_frame: "map"
+    delay_sec: 5.0
