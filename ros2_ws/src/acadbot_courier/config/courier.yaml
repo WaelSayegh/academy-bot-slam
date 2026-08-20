@@ -1,0 +1,19 @@
+# courier.yaml — named locations and operating limits for the courier.
+#
+# Coordinates below are in the map frame, surveyed in RViz with Publish Point
+# and sanity-checked reachable with a manual 2D Goal Pose. Publish Point does
+# not report orientation, so yaw is left at 0.0 for all four; nothing in the
+# project requirements needs the robot to face a particular way on arrival.
+courier_node:
+  ros__parameters:
+    location_names: ["reception", "lab_bench", "store_room", "charging_dock"]
+    locations:
+      reception:     {x: 1.020, y: -0.297, yaw: 0.0}
+      lab_bench:     {x: 1.932, y:  1.377, yaw: 0.0}
+      charging_dock: {x: 5.020, y:  2.498, yaw: 0.0}
+      store_room:    {x: 6.053, y:  1.439, yaw: 0.0}
+
+    booking_timeout_sec: 120.0   # booked-but-never-run jobs expire
+    max_attempts: 3              # tries per leg before the job fails (Phase 5)
+    # feedback_period_sec: 1.0   # unused — feedback now relays every Nav2 tick
+    leg_timeout_sec: 60.0        # give up on a single leg after this long

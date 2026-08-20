@@ -1,0 +1,8 @@
+# RequestDelivery.srv — book a delivery. Returns immediately; the robot does not move.
+
+string pickup           # named location, e.g. "reception"
+string dropoff          # named location, e.g. "lab_bench"
+---
+bool   accepted
+string job_id           # "D-0001" when accepted, empty when not
+string reason           # always filled in, human-readable

@@ -1,0 +1,32 @@
+<?xml version="1.0" ?>
+<!--
+  blockage_box.sdf — a static wall segment for the retry/blockage demo, not
+  part of the permanent world. It extends the existing interior divider
+  (world x = 0.5) further south, sealing the only gap between the west and
+  east halves of the room rather than sitting across it — a wall meant to
+  block west/east crossing has to be thin in x and long in y, the same
+  orientation as the divider it's extending, not the other way around.
+  Spawned at world (0.5, -2.0, 0.5) it runs from the divider's bottom edge
+  (y = -1) down past the south wall, well clear of the robot's spawn point
+  and 'reception' (both near x = -3, -2, far outside this wall's x-range).
+  Spawn it right before that demo and delete it afterward; every other test
+  drives through that gap and would break if this were left in the world
+  file.
+-->
+<sdf version="1.10">
+  <model name="blockage_box">
+    <static>true</static>
+    <link name="link">
+      <collision name="c">
+        <geometry><box><size>0.2 2.0 1.0</size></box></geometry>
+      </collision>
+      <visual name="v">
+        <geometry><box><size>0.2 2.0 1.0</size></box></geometry>
+        <material>
+          <ambient>0.9 0.5 0.1 1</ambient>
+          <diffuse>0.9 0.5 0.1 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

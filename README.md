@@ -115,6 +115,8 @@ kick in. Block its path with a chair in RViz's view to trigger them live.
 | `acadbot_localization` | `map_server` + AMCL on a saved map + **C++** `localization_monitor` (built as the Session-2 homework; this is the course-official version) |
 | `acadbot_navigation`  | Nav2 params (incl. recovery behaviors), maps, launch |
 | `acadbot_bringup`     | One-command launch files per session |
+| `acadbot_courier_interfaces` | Final project: `RequestDelivery` service and `Deliver` action definitions |
+| `acadbot_courier`     | Final project: **C++** `courier_node` — books and executes deliveries between named locations using Nav2. See `ros2_ws/src/acadbot_courier/README.md`. |
 
 See [`PROJECT.md`](PROJECT.md) for the full architecture, the TF tree, the topic
 graph and the session-by-session learning outcomes.
@@ -129,11 +131,12 @@ PR, review — is in [`CONTRIBUTING.md`](CONTRIBUTING.md). Read it once in week 
 
 | Argument | Applies to | Default | Why you'd change it |
 |---|---|---|---|
-| `headless:=true` | `simulation`, `mapping`, `localization`, `autonomy` | `false` | Gazebo server only — no GUI, no GPU. Needed for CI and for machines with no working X. |
-| `rviz:=false` | `mapping`, `localization`, `autonomy` | `true` | Skip RViz2 for the same reason. |
+| `headless:=true` | `simulation`, `mapping`, `localization`, `autonomy`, `courier` | `false` | Gazebo server only — no GUI, no GPU. Needed for CI and for machines with no working X. |
+| `rviz:=false` | `mapping`, `localization`, `autonomy`, `courier` | `true` | Skip RViz2 for the same reason. |
 | `map:=<path>` | `localization` | `acadbot_navigation/maps/academy_map.yaml` | Localize on a different saved `.yaml` map. |
 | `localization:=slam` | `autonomy`, `navigation` | `amcl` | Use slam_toolbox localization mode on a serialized `.posegraph` instead of AMCL on the `.yaml`/`.pgm` grid. Needs that `.posegraph` saved next to the map. |
-| `nav2_delay:=<sec>` | `autonomy`, `navigation` | `12.0` | How long to wait for localization before starting Nav2. Raise it if you see `Failed to change state for node: controller_server`. |
+| `nav2_delay:=<sec>` | `autonomy`, `navigation`, `courier` | `12.0` | How long to wait for localization before starting Nav2. Raise it if you see `Failed to change state for node: controller_server`. |
+| `courier_params_file:=<path>` | `courier` | `acadbot_courier/config/courier.yaml` | Point the courier node at a different parameters file. |
 
 ## Smoke-testing after a dependency bump
 
