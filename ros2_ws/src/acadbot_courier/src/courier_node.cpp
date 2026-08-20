@@ -138,6 +138,20 @@ private:
   {
     std::lock_guard<std::mutex> lock(jobs_mutex_);
 
+    // Checked first, ahead of anything about this specific request: an
+    // unready Nav2 blocks every booking equally, so there is no point
+    // validating a pickup/dropoff pair the robot could not act on yet
+    // anyway. action_server_is_ready() just reads the client's already-known
+    // connection state — it is a cheap local check, not a round trip to
+    // Nav2, so it is fine to call directly here under the lock.
+    if (!nav_client_->action_server_is_ready()) {
+      response->accepted = false;
+      response->job_id = "";
+      response->reason = "Nav2 is not ready yet — try again shortly";
+      RCLCPP_WARN(get_logger(), "Rejected booking: %s", response->reason.c_str());
+      return;
+    }
+
     if (!locations_.count(request->pickup)) {
       response->accepted = false;
       response->job_id = "";
