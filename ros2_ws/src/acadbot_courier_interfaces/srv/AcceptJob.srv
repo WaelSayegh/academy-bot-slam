@@ -1,0 +1,6 @@
+string pickup_name
+string dropoff_name
+---
+bool accepted
+uint32 job_id
+string reason

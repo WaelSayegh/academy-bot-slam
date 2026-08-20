@@ -44,6 +44,7 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
+    default_bt_xml: "/opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml"
     navigators: ["navigate_to_pose", "navigate_through_poses"]
     navigate_to_pose:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"

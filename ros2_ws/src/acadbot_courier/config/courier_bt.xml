@@ -1,0 +1,30 @@
+<root BTCPP_format="4" main_tree_to_execute="CourierDelivery">
+    <BehaviorTree ID="CourierDelivery">
+        <Sequence name="deliver_package">
+            <!-- Pickup leg -->
+            <RetryUntilSuccessful num_attempts="{retry_count}" name="pickup_attempts">
+                <Fallback name="pickup_try_or_delay">
+                    <Timeout msec="{leg_timeout_msec}">
+                        <DriveToLocation pose="{pickup_pose}" location_name="{pickup_name}" leg="pickup"/>
+                    </Timeout>
+                    <!-- Reached only when the attempt failed or timed out. -->
+                    <Delay delay_msec="{retry_delay_msec}">
+                        <AlwaysFailure/>
+                    </Delay>
+                </Fallback>
+            </RetryUntilSuccessful>
+
+            <!-- Dropoff leg -->
+            <RetryUntilSuccessful num_attempts="{retry_count}" name="dropoff_attempts">
+                <Fallback name="dropoff_try_or_delay">
+                    <Timeout msec="{leg_timeout_msec}">
+                        <DriveToLocation pose="{dropoff_pose}" location_name="{dropoff_name}" leg="dropoff"/>
+                    </Timeout>
+                    <Delay delay_msec="{retry_delay_msec}">
+                        <AlwaysFailure/>
+                    </Delay>
+                </Fallback>
+            </RetryUntilSuccessful>
+        </Sequence>
+    </BehaviorTree>
+</root>

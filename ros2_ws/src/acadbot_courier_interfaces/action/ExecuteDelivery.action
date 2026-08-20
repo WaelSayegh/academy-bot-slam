@@ -1,0 +1,13 @@
+# Goal
+uint32 job_id
+---
+# Result
+bool success
+string failed_leg
+uint32 attempts
+---
+# Feedback
+string leg
+string target_location
+float32 distance_remaining
+string note
