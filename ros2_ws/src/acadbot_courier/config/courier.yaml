@@ -1,0 +1,22 @@
+courier_server:
+  ros__parameters:
+    use_sim_time: true
+
+    frame_id: "map"
+
+    max_retries: 1
+    feedback_rate_hz: 2.0
+    nav2_server_timeout_sec: 10.0
+    nav_goal_timeout_sec: 180.0
+    nav_result_poll_period_ms: 100
+
+    location_names:
+      - reception
+      - storage
+      - office
+      - lab_bench
+
+    locations.reception: [2.5755, -0.1327, 1.1762]
+    locations.storage: [1.0332, 1.4597, -1.8016]
+    locations.office: [2.4481, 4.2494, 2.6353]
+    locations.lab_bench: [4.3274, 4.0075, 0.3199]
