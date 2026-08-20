@@ -1,160 +1,178 @@
-# nav2_params.yaml
-# =============================================================================
-# Nav2 configuration for AcadBot (Session 4).
-# Tuned for a small differential-drive robot (footprint ~0.30 x 0.22 m, max
-# speed ~0.26 m/s) using a 2D LiDAR on /scan and slam_toolbox/AMCL for map->odom.
-#
-# Highlight for the course: the *behavior_server* + the recovery branch of the
-# behavior tree are what give the robot its RECOVERY BEHAVIORS — clearing the
-# costmap, spinning, backing up, and waiting when it gets stuck.
+# nav2_params.yaml — ANNOTATED reference copy.
+# Every param below has a comment explaining what it controls. This file is
+# for YOU to read, not to replace your real config with (some line lengths
+# would break YAML parsing if pasted carelessly) — cross-reference against
+# your actual file.
 # =============================================================================
 
-# ----------------------------------------------------------------------------
-# AMCL (only used if you localize with a static map instead of slam_toolbox)
-# ----------------------------------------------------------------------------
 amcl:
   ros__parameters:
-    use_sim_time: true
-    base_frame_id: "base_footprint"
-    odom_frame_id: "odom"
-    global_frame_id: "map"
-    scan_topic: scan
-    robot_model_type: "nav2_amcl::DifferentialMotionModel"
-    min_particles: 500
-    max_particles: 2000
-    laser_max_range: 12.0
-    laser_min_range: 0.12
-    max_beams: 120
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    update_min_a: 0.2
-    update_min_d: 0.25
+    use_sim_time: true            # use /clock from Gazebo instead of wall time
+    base_frame_id: "base_footprint"  # robot's base frame AMCL tracks
+    odom_frame_id: "odom"         # frame AMCL reads wheel-odometry drift from
+    global_frame_id: "map"        # frame AMCL publishes the corrected pose into
+    scan_topic: scan               # LiDAR topic AMCL matches against the map
+    robot_model_type: "nav2_amcl::DifferentialMotionModel"  # matches your diff-drive robot's motion noise model
+    min_particles: 500            # smallest particle-filter population allowed
+    max_particles: 2000           # largest particle-filter population allowed
+    laser_max_range: 12.0         # ignore LiDAR returns beyond this range (m)
+    laser_min_range: 0.12         # ignore LiDAR returns closer than this (m)
+    max_beams: 120                # how many laser beams used per update (subsampled for speed)
+    alpha1: 0.2                   # odometry noise: rotation error from rotation
+    alpha2: 0.2                   # odometry noise: rotation error from translation
+    alpha3: 0.2                   # odometry noise: translation error from translation
+    alpha4: 0.2                   # odometry noise: translation error from rotation
+    update_min_a: 0.2             # min angular motion (rad) before AMCL re-localizes
+    update_min_d: 0.25            # min linear motion (m) before AMCL re-localizes
+    set_initial_pose: true        # skip manual RViz click, use initial_pose below at startup
+    initial_pose:
+      x: 0.0                      # known spawn x in map frame (see README math)
+      y: 0.0                      # known spawn y in map frame
+      yaw: 0.0                    # known spawn heading (assumed, verify empirically)
 
-# ----------------------------------------------------------------------------
-# Behavior-tree navigator: which BT XML to run, and which plugins it may use.
-# The default BT already continues into the recovery subtree on failure.
-# ----------------------------------------------------------------------------
 bt_navigator:
   ros__parameters:
     use_sim_time: true
-    global_frame: map
-    robot_base_frame: base_link
-    odom_topic: /odom
-    bt_loop_duration: 10
-    default_server_timeout: 20
-    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    global_frame: map              # frame the behavior tree plans goals in
+    robot_base_frame: base_link    # robot frame the BT tracks
+    odom_topic: /odom               # odometry source for the BT navigator
+    bt_loop_duration: 10            # BT tick period, ms
+    default_server_timeout: 20      # seconds before a BT action node times out waiting on a server
+    navigators: ["navigate_to_pose", "navigate_through_poses"]  # which action servers this bt_navigator exposes
     navigate_to_pose:
-      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"  # our patrol_commander/executor calls THIS action
     navigate_through_poses:
-      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"  # multi-waypoint variant, unused by us
 
-# ----------------------------------------------------------------------------
-# Controller server: local trajectory tracking (DWB).
-# ----------------------------------------------------------------------------
 controller_server:
   ros__parameters:
     use_sim_time: true
-    controller_frequency: 20.0
-    min_x_velocity_threshold: 0.001
-    min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
-    progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"]
-    controller_plugins: ["FollowPath"]
+    controller_frequency: 20.0      # Hz the local controller (DWB) recomputes cmd_vel
+    min_x_velocity_threshold: 0.001 # below this, treat forward vel as zero
+    min_theta_velocity_threshold: 0.001  # below this, treat angular vel as zero
+    failure_tolerance: 0.3          # seconds controller may fail before reporting failure up
+    progress_checker_plugins: ["progress_checker"]  # detects "stuck, not making progress"
+    goal_checker_plugins: ["general_goal_checker"]  # detects "close enough, goal reached"
+    controller_plugins: ["FollowPath"]  # which local planner to run
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      required_movement_radius: 0.5   # must move at least this far (m)...
+      movement_time_allowance: 10.0   # ...within this many seconds, or it's "stuck"
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.20
-      yaw_goal_tolerance: 0.25
-      stateful: true
+      xy_goal_tolerance: 0.20   # goal considered reached within this radius (m)
+      yaw_goal_tolerance: 0.25  # goal considered reached within this heading error (rad)
+      stateful: true            # remembers it reached the goal even if it drifts slightly after
 
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: true
-      min_vel_x: 0.0
-      max_vel_x: 0.26
-      min_vel_theta: 0.0
-      max_vel_theta: 1.0
-      min_speed_xy: 0.0
-      max_speed_xy: 0.26
+      plugin: "dwb_core::DWBLocalPlanner"  # Dynamic Window Approach local planner
+      debug_trajectory_details: true       # verbose trajectory scoring logs
+      min_vel_x: 0.05            # min forward speed (m/s) — 0 allows stopping
+      max_vel_x: 0.05            # ← TOP SPEED forward (m/s). Lower this to slow the robot.
+      min_vel_theta: 0.0         # min angular speed (rad/s)
+      max_vel_theta: 0.5     # max angular (turning) speed (rad/s)
+      min_speed_xy: 0.0          # min combined linear speed
+      max_speed_xy: 0.26         # ← TOP combined linear speed (m/s). Lower alongside max_vel_x.
       min_speed_theta: 0.0
-      acc_lim_x: 1.0
-      acc_lim_theta: 2.0
-      decel_lim_x: -1.0
-      decel_lim_theta: -2.0
-      vx_samples: 20
-      vtheta_samples: 20
-      sim_time: 1.7
-      transform_tolerance: 0.2
-      xy_goal_tolerance: 0.20
+      acc_lim_x: 1.0             # max forward acceleration (m/s^2)
+      acc_lim_theta: 2.0         # max angular acceleration (rad/s^2)
+      decel_lim_x: -1.0          # max forward deceleration
+      decel_lim_theta: -2.0      # max angular deceleration
+      vx_samples: 20             # candidate forward-velocity samples per planning cycle
+      vtheta_samples: 20         # candidate angular-velocity samples per planning cycle
+      sim_time: 1.7              # seconds each candidate trajectory is simulated forward
+      transform_tolerance: 0.2   # allowed staleness (s) of TF lookups before rejecting
+      xy_goal_tolerance: 0.20    # (duplicate of general_goal_checker's, used internally by DWB too)
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign",
-                "PathAlign", "PathDist", "GoalDist"]
-      BaseObstacle.scale: 0.02
-      PathAlign.scale: 32.0
-      GoalAlign.scale: 24.0
-      PathDist.scale: 32.0
-      GoalDist.scale: 24.0
-      RotateToGoal.scale: 32.0
+                "PathAlign", "PathDist", "GoalDist"]  # scoring functions ranking candidate trajectories
+      BaseObstacle.scale: 0.02   # weight: penalize trajectories near obstacles
+      PathAlign.scale: 32.0      # weight: reward staying aligned with the global path
+      GoalAlign.scale: 24.0      # weight: reward facing toward the goal
+      PathDist.scale: 32.0       # weight: reward staying close to the global path
+      GoalDist.scale: 24.0       # weight: reward getting closer to the goal
+      RotateToGoal.scale: 32.0   # weight: reward rotating in place to face goal near the end
+      # DWB tuning notes:
+      # - `sim_time` controls how far ahead each candidate trajectory is
+      #   simulated. Longer sim_time makes planning consider longer motions
+      #   (better for faster robots) but increases CPU usage and may react
+      #   slower to dynamic obstacles.
+      # - `vx_samples` and `vtheta_samples` determine the discrete set of
+      #   velocities the planner explores each cycle. Increasing samples gives
+      #   higher-quality plans at the cost of compute. Reduce for low-CPU
+      #   hardware or increase if oscillations/poor trajectories occur.
+      # - `critics` are modular scoring functions. Weights like `PathAlign.scale`
+      #   and `BaseObstacle.scale` balance path-following vs obstacle avoidance.
+      #   If the robot hugs obstacles, increase `BaseObstacle.scale` or
+      #   increase `inflation_radius` in the costmap.
 
-# ----------------------------------------------------------------------------
-# Local costmap (rolling window around the robot, for the controller).
-# ----------------------------------------------------------------------------
 local_costmap:
   local_costmap:
     ros__parameters:
       use_sim_time: true
-      update_frequency: 5.0
-      publish_frequency: 2.0
-      global_frame: odom
+      update_frequency: 5.0        # Hz the local costmap recomputes
+      publish_frequency: 2.0       # Hz it's published for visualization/consumers
+      global_frame: odom           # local costmap is anchored in odom (rolls with the robot)
       robot_base_frame: base_link
-      rolling_window: true
-      width: 4
-      height: 4
-      resolution: 0.05
-      robot_radius: 0.20
-      plugins: ["obstacle_layer", "inflation_layer"]
+      rolling_window: true         # window follows the robot instead of being fixed to the map
+      width: 4                     # window width, meters
+      height: 4                    # window height, meters
+      resolution: 0.05             # meters per costmap cell
+      robot_radius: 0.20           # robot modeled as a circle this radius (m) for collision checking
+      plugins: ["obstacle_layer", "inflation_layer"]  # layers composited into this costmap
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
-        observation_sources: scan
+        observation_sources: scan   # which sensor feeds this layer
         scan:
           topic: /scan
-          max_obstacle_height: 2.0
-          clearing: true
-          marking: true
+          max_obstacle_height: 2.0  # ignore points above this height (m)
+          clearing: true            # scan can clear previously-marked free space
+          marking: true             # scan can mark new obstacles
           data_type: "LaserScan"
-          raytrace_max_range: 12.0
-          obstacle_max_range: 10.0
+          raytrace_max_range: 12.0  # max range used to clear free space along a ray
+          obstacle_max_range: 10.0  # max range used to mark obstacles
+        # Obstacle layer notes:
+        # - `marking` controls whether new points mark cells as occupied.
+        # - `clearing` allows sensor rays to mark cells as free again (useful
+        #   for removing spurious obstacles). For sensors that do not provide
+        #   full ray coverage, disabling `clearing` can prevent false frees.
+        # - `raytrace_max_range` controls clearing reach; if set too long a
+        #   short, stale measurements can wrongly clear obstacles.
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45
+        cost_scaling_factor: 3.0   # how sharply cost decays with distance from obstacle
+        inflation_radius: 0.45     # how far (m) obstacle "danger zone" extends — this is the pink/cyan halo you saw in RViz
+      # Inflation/footprint notes:
+      # - `inflation_radius` + robot footprint size determine how close the
+      #   planner will route to obstacles. Use a slightly larger inflation to
+      #   give controllers more margin, at the cost of narrower passages.
+      # - `robot_radius` is used as a simplified circular footprint. For
+      #   asymmetric robots prefer a polygonal footprint published on
+      #   `local_costmap/published_footprint` (the behavior server reads it).
 
-# ----------------------------------------------------------------------------
-# Global costmap (whole map, for the planner).
-# ----------------------------------------------------------------------------
 global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: true
-      update_frequency: 1.0
+      update_frequency: 1.0        # Hz the global costmap recomputes (slower than local, whole map is big)
       publish_frequency: 1.0
-      global_frame: map
+      global_frame: map            # anchored to the static map, doesn't move with the robot
       robot_base_frame: base_link
       robot_radius: 0.20
       resolution: 0.05
-      track_unknown_space: true
+      track_unknown_space: true    # unexplored areas treated as unknown, not free, for planning
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: true
+        map_subscribe_transient_local: true  # QoS setting matching map_server's transient-local publish
+      # Static layer notes:
+      # - `map_subscribe_transient_local` should match the map_server's QoS
+      #   so late-joining lifecycle nodes can still receive the map snapshot.
+      # - The static layer defines permanent obstacles from the occupancy
+      #   grid. If you modify the map on-the-fly (unlikely), call the map
+      #   server's `change_maps` service or republish the map with transient-local.
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -172,28 +190,32 @@ global_costmap:
         cost_scaling_factor: 3.0
         inflation_radius: 0.45
 
-# ----------------------------------------------------------------------------
-# Global planner.
-# ----------------------------------------------------------------------------
 planner_server:
   ros__parameters:
     use_sim_time: true
-    expected_planner_frequency: 20.0
-    planner_plugins: ["GridBased"]
+    expected_planner_frequency: 20.0  # warns if planning takes longer than this allows
+    planner_plugins: ["GridBased"]    # which global planner to use
     GridBased:
-      plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.5
-      use_astar: false
-      allow_unknown: true
+      plugin: "nav2_navfn_planner::NavfnPlanner"  # Dijkstra/A*-style grid planner
+      tolerance: 0.5      # how close to the exact goal cell a plan may terminate (m)
+      use_astar: true    # false = Dijkstra (uniform cost search), true = A*
+      allow_unknown: true # allow planning through unexplored map cells
+      # Algorithm notes:
+      # - Dijkstra (`use_astar: false`) explores uniform-cost frontiers and
+      #   is deterministic given identical costs; A* (`use_astar: true`) uses
+      #   a heuristic (usually Euclidean) to speed planning by guiding search
+      #   toward the goal. A* is typically faster on large maps if your
+      #   heuristic is admissible (never overestimates). If your map has
+      #   non-uniform traversal costs or you rely on `allow_unknown`, prefer
+      #   A* for lower latency.
+      # - `allow_unknown: true` lets the planner route through unknown grid
+      #   cells. This is useful in partially-explored environments but may
+      #   cause the planner to route through areas that are actually blocked.
+      #   If you operate in a mapped, static world prefer `allow_unknown: false`.
 
-# ----------------------------------------------------------------------------
-# *** RECOVERY BEHAVIORS ***  (the behavior server)
-# When planning or control fails, the BT triggers these to get unstuck:
-#   spin          : rotate in place to clear the local costmap / reorient
-#   backup        : drive backwards a short distance away from an obstacle
-#   drive_on_heading: nudge forward along a heading
-#   wait          : pause and let dynamic obstacles pass / costmaps refresh
-# ----------------------------------------------------------------------------
+# *** RECOVERY BEHAVIORS *** — what runs when the planner/controller gets stuck.
+# This is what requirement 7 relies on: Nav2 tries these before finally
+# ABORTing, and our dispatcher only then treats it as a leg failure/retry.
 behavior_server:
   ros__parameters:
     use_sim_time: true
@@ -201,106 +223,106 @@ behavior_server:
     local_footprint_topic: local_costmap/published_footprint
     global_costmap_topic: global_costmap/costmap_raw
     global_footprint_topic: global_costmap/published_footprint
-    cycle_frequency: 10.0
-    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait", "assisted_teleop"]
+    cycle_frequency: 10.0     # Hz the behavior server itself runs at
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait", "assisted_teleop"]  # available recovery actions
     spin:
-      plugin: "nav2_behaviors::Spin"
+      plugin: "nav2_behaviors::Spin"           # rotate in place to clear costmap / relocalize
     backup:
-      plugin: "nav2_behaviors::BackUp"
+      plugin: "nav2_behaviors::BackUp"         # reverse away from an obstacle
     drive_on_heading:
-      plugin: "nav2_behaviors::DriveOnHeading"
+      plugin: "nav2_behaviors::DriveOnHeading" # nudge forward along a fixed heading
     wait:
-      plugin: "nav2_behaviors::Wait"
+      plugin: "nav2_behaviors::Wait"           # pause, letting dynamic obstacles clear
     assisted_teleop:
-      plugin: "nav2_behaviors::AssistedTeleop"
+      plugin: "nav2_behaviors::AssistedTeleop" # collision-checked manual teleop (unused by us)
     local_frame: odom
     global_frame: map
     robot_base_frame: base_link
     transform_tolerance: 0.2
-    simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
-    rotational_acc_lim: 2.0
+    # Recovery behavior notes:
+    # - When the planner/controller detects a failure, Nav2 will invoke a
+    #   sequence of recovery actions (from `behavior_plugins`) to try to
+    #   recover before finally aborting the goal. Order and selection matter.
+    # - `spin` is useful to clear transient obstacles and to help AMCL
+    #   re-localize by getting a better laser view. `backup` reverses away
+    #   from obstacles; use with care in cluttered areas. `drive_on_heading`
+    #   can nudge the robot forward along a heading when the controller
+    #   stalls. `wait` simply pauses allowing dynamic obstacles to clear.
+    # - If your robot frequently aborts due to oscillation, enable the
+    #   `Oscillation` critic in DWB and tune its threshold instead of relying
+    #   solely on recoveries.
+    simulate_ahead_time: 2.0     # seconds of lookahead when checking recovery motions for safety
+    max_rotational_vel: 1.0      # spin recovery's max angular speed
+    min_rotational_vel: 0.4      # spin recovery's min angular speed
+    rotational_acc_lim: 2.0      # spin recovery's angular acceleration limit
 
-# ----------------------------------------------------------------------------
-# Smoother, waypoint follower, velocity smoother.
-# ----------------------------------------------------------------------------
 smoother_server:
   ros__parameters:
     use_sim_time: true
-    smoother_plugins: ["simple_smoother"]
+    smoother_plugins: ["simple_smoother"]  # post-processes the planned path to smooth it
     simple_smoother:
       plugin: "nav2_smoother::SimpleSmoother"
-      tolerance: 1.0e-10
-      max_its: 1000
-      do_refinement: true
+      tolerance: 1.0e-10   # convergence tolerance for the smoothing optimization
+      max_its: 1000        # max smoothing iterations
+      do_refinement: true  # extra refinement pass after initial smoothing
 
 waypoint_follower:
   ros__parameters:
     use_sim_time: true
-    loop_rate: 20
-    stop_on_failure: false
-    waypoint_task_executor_plugin: "wait_at_waypoint"
+    loop_rate: 20                     # Hz the waypoint follower checks progress
+    stop_on_failure: false            # keep going to next waypoint even if one fails
+    waypoint_task_executor_plugin: "wait_at_waypoint"  # what to do AT each waypoint
     wait_at_waypoint:
       plugin: "nav2_waypoint_follower::WaitAtWaypoint"
       enabled: true
-      waypoint_pause_duration: 1000
+      waypoint_pause_duration: 1000   # ms to pause at each waypoint (used by patrol_commander, not our courier)
 
 velocity_smoother:
   ros__parameters:
     use_sim_time: true
-    smoothing_frequency: 20.0
-    scale_velocities: false
-    feedback: "OPEN_LOOP"
-    max_velocity: [0.26, 0.0, 1.0]
-    min_velocity: [-0.26, 0.0, -1.0]
-    max_accel: [1.0, 0.0, 2.0]
-    max_decel: [-1.0, 0.0, -2.0]
+    smoothing_frequency: 20.0    # Hz output cmd_vel is smoothed/published at
+    scale_velocities: false      # if true, scales all components together to respect limits; false = clip independently
+    feedback: "OPEN_LOOP"        # no closed-loop correction, just smooths the commanded velocity
+    max_velocity: [0.05, 0.0, 0.3]  # ← [max linear x, max linear y (unused, diff-drive), max angular] m/s, rad/s
+    min_velocity: [-0.05, 0.0, -0.3] # ← same, negative direction (reverse/opposite turn)
+    max_accel: [1.0, 0.0, 2.0]       # max acceleration per axis
+    max_decel: [-1.0, 0.0, -2.0]     # max deceleration per axis
     odom_topic: "odom"
-    odom_duration: 0.1
+    odom_duration: 0.1           # window (s) of odometry used to estimate current velocity
 
-# ----------------------------------------------------------------------------
-# Lifecycle / collision monitor.
-# ----------------------------------------------------------------------------
 collision_monitor:
   ros__parameters:
     use_sim_time: true
     base_frame_id: "base_footprint"
     odom_frame_id: "odom"
-    cmd_vel_in_topic: "cmd_vel_smoothed"
-    cmd_vel_out_topic: "cmd_vel"
-    state_topic: "collision_monitor_state"
+    cmd_vel_in_topic: "cmd_vel_smoothed"   # reads the smoothed velocity command...
+    cmd_vel_out_topic: "cmd_vel"           # ...and republishes it here, UNLESS a collision is imminent
+    state_topic: "collision_monitor_state" # publishes its current safety state
     transform_tolerance: 0.2
-    source_timeout: 1.0
-    stop_pub_timeout: 2.0
-    polygons: ["FootprintApproach"]
+    source_timeout: 1.0          # max staleness (s) allowed for sensor data before treating as unsafe
+    stop_pub_timeout: 2.0        # how long to keep publishing stop cmd after last unsafe reading
+    polygons: ["FootprintApproach"]   # zones checked around the robot
     FootprintApproach:
       type: "polygon"
-      action_type: "approach"
+      action_type: "approach"    # slows/stops as something approaches, rather than a hard emergency stop
       footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 1.2
-      simulation_time_step: 0.1
-      min_points: 6
+      time_before_collision: 1.2  # seconds of lookahead before a predicted collision triggers action
+      simulation_time_step: 0.1   # step size for that lookahead simulation
+      min_points: 6                # min sensor points required to count as a detected obstacle
       visualize: false
       enabled: true
     observation_sources: ["scan"]
     scan:
       type: "scan"
       topic: "/scan"
-      min_height: 0.15
-      max_height: 2.0
+      min_height: 0.15   # ignore points below this height (m) — filters ground returns
+      max_height: 2.0    # ignore points above this height (m)
       enabled: true
 
-# ----------------------------------------------------------------------------
-# Docking server.
-# ----------------------------------------------------------------------------
-# AcadBot never docks — but Nav2's default bringup (nav2_bringup's
-# navigation_launch.py) starts `docking_server` and lists it in the lifecycle
-# manager.  With no `dock_plugins` entry the server fails to configure, the
-# lifecycle manager aborts the whole bringup, and planner/controller/behavior/
-# bt_navigator all stay INACTIVE — every goal is then rejected with
-# "Goal rejected by Nav2".  A minimal valid plugin keeps the stock bringup
-# happy; nothing in the course uses it.
+# Docking server — AcadBot never actually docks, but nav2_bringup's stock
+# launch always starts this and the lifecycle manager will fail the WHOLE
+# bringup (planner/controller/behavior/bt_navigator all stuck INACTIVE) if
+# it can't configure. This block exists purely to satisfy that requirement.
 docking_server:
   ros__parameters:
     use_sim_time: true
@@ -315,7 +337,7 @@ docking_server:
     fixed_frame: "odom"
     dock_backwards: false
     dock_prestaging_tolerance: 0.5
-    dock_plugins: ['simple_charging_dock']
+    dock_plugins: ['simple_charging_dock']  # minimal valid plugin, just to pass configure()
     simple_charging_dock:
       plugin: 'opennav_docking::SimpleChargingDock'
       docking_threshold: 0.05

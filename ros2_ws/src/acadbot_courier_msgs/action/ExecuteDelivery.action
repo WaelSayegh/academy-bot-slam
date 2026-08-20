@@ -1,0 +1,18 @@
+# Why an action, not a service: this runs for minutes, needs to stream
+# progress while driving (req 4), and must be cancellable mid-flight (req 6).
+# A service is fire-and-return-immediately — wrong shape for a long task.
+
+# --- Goal: sent once, when the delivery starts ---
+string job_id
+NamedLocation pickup
+NamedLocation dropoff
+---
+# --- Result: sent once, when the action ends (success, failure, or cancel) ---
+bool success
+string result_message
+string failed_leg
+---
+# --- Feedback: streamed repeatedly (>=1/sec) while the action runs ---
+string current_leg
+NamedLocation heading_to
+float64 distance_remaining

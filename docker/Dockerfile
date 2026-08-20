@@ -12,6 +12,7 @@
 # Run with:     ./run_ros_container.sh
 # =============================================================================
 FROM ros:jazzy-ros-base
+# it is lightweight since it is headless
 
 LABEL org.opencontainers.image.title="acadbot-jazzy"
 LABEL org.opencontainers.image.description="ROS 2 Jazzy + Gazebo Harmonic + Nav2 + slam_toolbox for the Robotics Academy SLAM track"

@@ -32,7 +32,7 @@ def generate_launch_description():
     map_yaml = LaunchConfiguration('map')
 
     default_params = os.path.join(pkg_nav, 'config', 'nav2_params.yaml')
-    default_map = os.path.join(pkg_nav, 'maps', 'academy_map.yaml')
+    default_map = os.path.join(pkg_nav, 'maps', 'academy_map_v2.yaml')
 
     # --- Localization via slam_toolbox (default) ---
     use_slam = PythonExpression(["'", localization, "' == 'slam'"])

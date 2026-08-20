@@ -13,7 +13,7 @@ slam_toolbox:
     mode: localization
 
     # Path to the serialized map produced by `slam_toolbox` "Serialize Map".
-    map_file_name: /ros2_ws/src/acadbot_navigation/maps/academy_map_serial
+    map_file_name: /ros2_ws/src/acadbot_navigation/maps/academy_map_v2_serial
     map_start_at_dock: true
 
     resolution: 0.05

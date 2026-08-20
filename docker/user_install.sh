@@ -130,6 +130,14 @@ apt_install \
     ros-${ROS_DISTRO}-rqt-tf-tree \
     ros-${ROS_DISTRO}-rviz2
 
+# builtin robot frame publisher, takes all links joints... and publishes them on a topic
+# any package that has a urdf reads from this topic
+# xacro and a urdf are very important for robot describtion
+# they are a framework that are called a universal robotic describtion 
+# to describe a robot in a lang that ros2 can understand that is xacro, 
+# macros are functions that can be called in a urdf file to generate a robot model
+
+
 # -----------------------------------------------------------------------------
 # 5. rosdep (so students can `rosdep install` their own future packages)
 # -----------------------------------------------------------------------------
