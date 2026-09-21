@@ -13,12 +13,9 @@
 // ---------------------------------------------------------------------------
 #include <chrono>
 #include <memory>
-
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
-
 using namespace std::chrono_literals;
-
 class SquareDriver : public rclcpp::Node
 {
 public:
@@ -28,30 +25,26 @@ public:
     side_length_   = declare_parameter<double>("side_length", 2.0);     // m
     linear_speed_  = declare_parameter<double>("linear_speed", 0.25);   // m/s
     angular_speed_ = declare_parameter<double>("angular_speed", 0.6);   // rad/s
-
+    // laps: stop automatically after this many completed laps.
+    // 0 means run forever (the original behaviour).
+    target_laps_   = declare_parameter<int>("laps", 0);
     // Time to cover one side, and time to turn 90 degrees, at the set speeds.
     drive_time_ = side_length_ / linear_speed_;
     turn_time_  = (M_PI / 2.0) / angular_speed_;
-
     cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 10);
-
     // 20 Hz control loop.
     timer_ = create_wall_timer(50ms, std::bind(&SquareDriver::on_timer, this));
     phase_start_ = now();
-
     RCLCPP_INFO(get_logger(),
       "square_driver: side=%.2fm  v=%.2fm/s  w=%.2frad/s  (drive %.1fs / turn %.1fs)",
       side_length_, linear_speed_, angular_speed_, drive_time_, turn_time_);
   }
-
 private:
   enum class Phase { DRIVE, TURN };
-
   void on_timer()
   {
     const double elapsed = (now() - phase_start_).seconds();
     geometry_msgs::msg::Twist cmd;
-
     if (phase_ == Phase::DRIVE) {
       cmd.linear.x = linear_speed_;
       if (elapsed >= drive_time_) {
@@ -63,32 +56,47 @@ private:
         sides_done_++;
         switch_phase(Phase::DRIVE, "driving");
         if (sides_done_ % 4 == 0) {
+          const int laps_done = sides_done_ / 4;
           RCLCPP_INFO(get_logger(),
             "Completed a full loop (%d sides). Watch the odometry drift in RViz!",
             sides_done_);
+
+          // Stop cleanly once the requested number of laps is reached.
+          if (target_laps_ > 0 && laps_done >= target_laps_) {
+            // Publish a zero Twist BEFORE shutting down — otherwise the robot
+            // keeps executing its last velocity command forever, since
+            // nothing tells it to stop just because this node exits.
+            geometry_msgs::msg::Twist stop_cmd;
+            stop_cmd.linear.x = 0.0;
+            stop_cmd.angular.z = 0.0;
+            cmd_pub_->publish(stop_cmd);
+
+            RCLCPP_INFO(get_logger(),
+              "Finished %d lap(s) as requested. Shutting down.", laps_done);
+
+            rclcpp::shutdown();
+            return;
+          }
         }
       }
     }
     cmd_pub_->publish(cmd);
   }
-
   void switch_phase(Phase next, const char * what)
   {
     phase_ = next;
     phase_start_ = now();
     RCLCPP_DEBUG(get_logger(), "phase -> %s", what);
   }
-
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
-
   double side_length_, linear_speed_, angular_speed_;
   double drive_time_, turn_time_;
+  int target_laps_;
   Phase phase_{Phase::DRIVE};
   rclcpp::Time phase_start_;
   int sides_done_{0};
 };
-
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
